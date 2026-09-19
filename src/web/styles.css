@@ -1,0 +1,20 @@
+:root {
+  color: #e8eef5;
+  background: #071018;
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, #12324a 0%, transparent 42%),
+    #071018;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
