@@ -6,7 +6,7 @@ The engine is a uv-managed Python package at `src/engine`. It wraps Nautilus Tra
 
 ```powershell
 uv sync --project src/engine
-uv run --project src/engine --directory src/engine python -m captain_nemo_engine
+uv run --directory src/engine python -m captain_nemo_engine
 ```
 
 Environment:

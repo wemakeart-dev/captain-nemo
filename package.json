@@ -10,7 +10,7 @@
     "web:build": "vite build",
     "test:web": "vitest run --config vitest.web.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
-    "test:engine": "uv run --project src/engine --directory src/engine pytest"
+    "test:engine": "uv run --directory src/engine pytest"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.57.2",

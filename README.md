@@ -62,7 +62,7 @@ Nautilus Trader is installed as a **prebuilt wheel** (`nautilus-trader` 1.221–
 Two processes:
 
 ```powershell
-uv run --project src/engine --directory src/engine python -m captain_nemo_engine
+uv run --directory src/engine python -m captain_nemo_engine
 yarn web:dev
 ```
 

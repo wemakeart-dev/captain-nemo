@@ -54,5 +54,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: uv sync --project src/engine
-      - run: uv run --project src/engine --directory src/engine pytest
+      - run: uv sync
+        working-directory: src/engine
+      - run: uv run pytest
+        working-directory: src/engine
