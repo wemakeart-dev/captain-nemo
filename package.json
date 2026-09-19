@@ -1,0 +1,29 @@
+{
+  "name": "captain-nemo",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@4.18.0",
+  "scripts": {
+    "proto:generate": "buf generate && node scripts/ensure-python-packages.mjs",
+    "proto:watch": "chokidar \"src/proto/**/*.proto\" -c \"yarn proto:generate\"",
+    "web:dev": "vite",
+    "web:build": "vite build",
+    "test:web": "vitest run --config vitest.web.config.ts",
+    "test:worker": "vitest run --config vitest.worker.config.ts",
+    "test:engine": "uv run --directory src/engine pytest"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.57.2",
+    "@bufbuild/protoc-gen-es": "^2.10.0",
+    "chokidar-cli": "^3.0.0",
+    "happy-dom": "^18.0.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.0",
+    "echarts": "^6.0.0",
+    "hybrids": "^9.1.22"
+  }
+}

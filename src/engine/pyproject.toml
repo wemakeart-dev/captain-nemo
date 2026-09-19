@@ -1,0 +1,26 @@
+[project]
+name = "captain-nemo-engine"
+version = "0.1.0"
+description = "Captain Nemo Nautilus Trader engine"
+requires-python = ">=3.12"
+dependencies = [
+    "nautilus-trader>=1.221,<2",
+    "pandas",
+    "protobuf",
+    "pyarrow",
+    "websockets>=14",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = [".", "../../src/generated/python"]
+testpaths = ["tests"]

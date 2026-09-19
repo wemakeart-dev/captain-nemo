@@ -1,0 +1,12 @@
+version: v2
+inputs:
+  - directory: src/proto
+plugins:
+  - local: protoc-gen-es
+    out: src/generated/ts
+    opt:
+      - target=ts
+  - remote: buf.build/protocolbuffers/python
+    out: src/generated/python
+  - remote: buf.build/protocolbuffers/pyi
+    out: src/generated/python

@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package captain_nemo.v1;
+
+message SocketFrame {
+  uint32 correlation_id = 1;
+  oneof kind {
+    Command command = 2;
+    CommandResult result = 3;
+    Error error = 4;
+    SessionHello hello = 5;
+    BarBatch bars = 6;
+    TradeBatch trades = 7;
+    PlaybackState playback = 8;
+    OrderEvent order = 9;
+    FillEvent fill = 10;
+    PositionSnapshot position = 11;
+  }
+}
+
+message Command {
+  oneof body {
+    ImportCsv import_csv = 1;
+    ListCatalog list_catalog = 2;
+    QueryBars query_bars = 3;
+    StartPlayback start_playback = 4;
+    StopPlayback stop_playback = 5;
+    SetSpeed set_speed = 6;
+  }
+}
+
+message ImportCsv {
+  string path = 1;
+  string instrument_id = 2;
+}
+
+message ListCatalog {}
+
+message QueryBars {
+  string instrument_id = 1;
+  int64 start_ns = 2;
+  int64 end_ns = 3;
+  string bar_step = 4;
+}
+
+message StartPlayback {
+  string instrument_id = 1;
+  int64 start_ns = 2;
+  int64 end_ns = 3;
+  double speed = 4;
+  string bar_step = 5;
+}
+
+message StopPlayback {}
+
+message SetSpeed {
+  double speed = 1;
+}
+
+message CommandResult {
+  oneof body {
+    ImportCsvResult import_csv = 1;
+    ListCatalogResult list_catalog = 2;
+    QueryBarsResult query_bars = 3;
+    PlaybackAck playback = 4;
+  }
+}
+
+message ImportCsvResult {
+  string instrument_id = 1;
+  uint64 trade_count = 2;
+  int64 start_ns = 3;
+  int64 end_ns = 4;
+}
+
+message CatalogItem {
+  string instrument_id = 1;
+  string symbol = 2;
+  int64 start_ns = 3;
+  int64 end_ns = 4;
+  uint64 trade_count = 5;
+}
+
+message ListCatalogResult {
+  repeated CatalogItem items = 1;
+}
+
+message QueryBarsResult {
+  uint32 bar_count = 1;
+}
+
+message PlaybackAck {
+  bool playing = 1;
+  double speed = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}
+
+message SessionHello {
+  string version = 1;
+}
+
+message Bar {
+  int64 ts_event_ns = 1;
+  string open = 2;
+  string high = 3;
+  string low = 4;
+  string close = 5;
+  string volume = 6;
+  uint32 trade_count = 7;
+}
+
+message BarBatch {
+  string instrument_id = 1;
+  string bar_step = 2;
+  repeated Bar bars = 3;
+  bool snapshot = 4;
+}
+
+message Trade {
+  uint64 id = 1;
+  string price = 2;
+  string qty = 3;
+  string quote_qty = 4;
+  int64 ts_event_ns = 5;
+  bool is_buyer_maker = 6;
+}
+
+message TradeBatch {
+  string instrument_id = 1;
+  repeated Trade trades = 2;
+}
+
+message PlaybackState {
+  string instrument_id = 1;
+  int64 cursor_ns = 2;
+  double speed = 3;
+  bool playing = 4;
+  int64 start_ns = 5;
+  int64 end_ns = 6;
+}
+
+message OrderEvent {
+  string instrument_id = 1;
+  string order_id = 2;
+  string side = 3;
+  string order_type = 4;
+  string quantity = 5;
+  string price = 6;
+  string status = 7;
+  int64 ts_event_ns = 8;
+}
+
+message FillEvent {
+  string instrument_id = 1;
+  string order_id = 2;
+  string trade_id = 3;
+  string side = 4;
+  string quantity = 5;
+  string price = 6;
+  int64 ts_event_ns = 7;
+}
+
+message PositionSnapshot {
+  string instrument_id = 1;
+  string side = 2;
+  string quantity = 3;
+  string avg_px = 4;
+  string unrealized_pnl = 5;
+  int64 ts_event_ns = 6;
+}
