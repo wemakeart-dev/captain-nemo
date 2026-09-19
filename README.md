@@ -7,7 +7,7 @@
     >
         <img
             alt="captain-nemo-header"
-            width="350px"
+            width="250px"
             src="https://res.cloudinary.com/wemakeart/image/upload/v1789832597/github/captain-nemo/captain-nemo-header_cpmk7c.webp"
         >
     </a>
