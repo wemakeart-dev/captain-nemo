@@ -1,0 +1,7 @@
+{
+  "name": "captain-nemo",
+  "packageManager": "yarn@4.18.0",
+  "devDependencies": {
+    "chokidar-cli": "^3.0.0"
+  }
+}
