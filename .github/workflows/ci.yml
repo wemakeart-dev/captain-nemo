@@ -20,7 +20,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-      - run: corepack enable
       - run: yarn install --immutable
       - run: yarn proto:generate
       - run: yarn test:web
@@ -34,7 +33,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-      - run: corepack enable
       - run: yarn install --immutable
       - run: yarn proto:generate
       - run: yarn test:worker
@@ -48,7 +46,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-      - run: corepack enable
       - run: yarn install --immutable
       - run: yarn proto:generate
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
