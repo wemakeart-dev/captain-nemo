@@ -1,4 +1,5 @@
 import { decodeFrame } from "../worker/codec.ts";
+import type { FileEntry } from "../worker/api.ts";
 import type { Bar, PlaybackState, Trade } from "@proto/captain_nemo/v1/wire_pb.ts";
 
 export type CandlePoint = [number, number, number, number, number];
@@ -13,11 +14,16 @@ export type ChartSnapshot = {
   status: string;
   connected: boolean;
   catalog: { instrumentId: string; symbol: string; tradeCount: string }[];
+  files: FileEntry[];
+  activeFileId: string;
+  selectedFileId: string;
+  fileManagerOpen: boolean;
 };
 
 export type PlayArgs = {
   speed: number;
   startNs: string;
+  endNs: string;
 };
 
 const listeners = new Set<() => void>();
@@ -32,11 +38,27 @@ export const chartStore: ChartSnapshot = {
   status: "Disconnected",
   connected: false,
   catalog: [],
+  files: [],
+  activeFileId: "",
+  selectedFileId: "",
+  fileManagerOpen: true,
 };
 
 export function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+export function subscribeKeys(keys: (keyof ChartSnapshot)[], listener: () => void): () => void {
+  let snapshot = keys.map((key) => chartStore[key]);
+  return subscribe(() => {
+    const next = keys.map((key) => chartStore[key]);
+    if (next.every((value, index) => value === snapshot[index])) {
+      return;
+    }
+    snapshot = next;
+    listener();
+  });
 }
 
 export function notify(): void {
@@ -63,6 +85,52 @@ export function setCatalog(catalog: ChartSnapshot["catalog"]): void {
   notify();
 }
 
+export function setFiles(files: FileEntry[]): void {
+  chartStore.files = files;
+  if (chartStore.activeFileId && !files.some((item) => item.fileId === chartStore.activeFileId)) {
+    chartStore.activeFileId = "";
+  }
+  if (chartStore.selectedFileId && !files.some((item) => item.fileId === chartStore.selectedFileId)) {
+    chartStore.selectedFileId = "";
+  }
+  notify();
+}
+
+export function setActiveFileId(fileId: string): void {
+  chartStore.activeFileId = fileId;
+  notify();
+}
+
+export function setSelectedFileId(fileId: string): void {
+  chartStore.selectedFileId = fileId;
+  const file = chartStore.files.find((item) => item.fileId === fileId);
+  if (file) {
+    chartStore.instrumentId = file.instrumentId;
+    chartStore.activeFileId = fileId;
+  }
+  notify();
+}
+
+export function setFileManagerOpen(open: boolean): void {
+  chartStore.fileManagerOpen = open;
+  notify();
+}
+
+export function clearChart(): void {
+  chartStore.candles = [];
+  chartStore.trades = [];
+  chartStore.playback = null;
+  notify();
+}
+
+export function selectedFile(store: ChartSnapshot = chartStore): FileEntry | undefined {
+  return store.files.find((item) => item.fileId === store.selectedFileId);
+}
+
+export function hasSelectedFile(store: ChartSnapshot = chartStore): boolean {
+  return Boolean(store.selectedFileId);
+}
+
 export function setInstrument(instrumentId: string): void {
   chartStore.instrumentId = instrumentId;
   notify();
@@ -80,17 +148,20 @@ export function setSpeed(speed: number): void {
 
 export function resolvePlayArgs(store: ChartSnapshot): PlayArgs {
   const speed = store.speed > 0 ? store.speed : 1;
+  const selected = selectedFile(store);
+  const endNs = selected?.endNs ?? "0";
   const playback = store.playback;
   if (
     playback &&
     !playback.playing &&
     playback.cursorNs > 0n &&
     playback.cursorNs < playback.endNs &&
-    playback.instrumentId === store.instrumentId
+    playback.instrumentId === store.instrumentId &&
+    playback.cursorNs !== playback.startNs
   ) {
-    return { speed, startNs: playback.cursorNs.toString() };
+    return { speed, startNs: playback.cursorNs.toString(), endNs };
   }
-  return { speed, startNs: "0" };
+  return { speed, startNs: selected?.startNs ?? "0", endNs };
 }
 
 function nsToMs(value: bigint): number {

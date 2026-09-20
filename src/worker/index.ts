@@ -1,5 +1,14 @@
-import type { SocketFrame } from "@proto/captain_nemo/v1/wire_pb.ts";
-import type { CatalogItem, ImportResult, PlaybackAck, QueryBarsResult, RpcRequest, WorkerApi } from "./api.ts";
+import type { FileEntry as ProtoFileEntry, SocketFrame } from "@proto/captain_nemo/v1/wire_pb.ts";
+import type {
+  CatalogItem,
+  FileEntry,
+  ImportCsvRequest,
+  ImportResult,
+  PlaybackAck,
+  QueryBarsResult,
+  RpcRequest,
+  WorkerApi,
+} from "./api.ts";
 import { decodeFrame } from "./codec.ts";
 import { EngineSocket } from "./socket.ts";
 
@@ -28,6 +37,34 @@ function bigintToString(value: bigint): string {
   return value.toString();
 }
 
+function mapFileEntry(item: ProtoFileEntry): FileEntry {
+  return {
+    fileId: item.fileId,
+    provider: item.provider,
+    dataset: item.dataset,
+    granularity: item.granularity,
+    period: item.period,
+    periodKey: item.periodKey,
+    fileName: item.fileName,
+    path: item.path,
+    instrumentId: item.instrumentId,
+    symbol: item.symbol,
+    startNs: bigintToString(item.startNs),
+    endNs: bigintToString(item.endNs),
+    tradeCount: bigintToString(item.tradeCount),
+  };
+}
+
+function playbackAck(frame: SocketFrame): PlaybackAck {
+  if (frame.kind.case !== "result" || frame.kind.value.body.case !== "playback") {
+    throw new Error("unexpected playback result");
+  }
+  return {
+    playing: frame.kind.value.body.value.playing,
+    speed: frame.kind.value.body.value.speed,
+  };
+}
+
 const api: WorkerApi = {
   async connect(url: string) {
     const hello = await socket.connect(url);
@@ -41,11 +78,18 @@ const api: WorkerApi = {
     socket.disconnect();
   },
 
-  async importCsv(path: string, instrumentId = "") {
+  async importCsv(request: ImportCsvRequest) {
     const frame = assertResult(
       await socket.request({
         case: "importCsv",
-        value: { path, instrumentId: instrumentId ?? "" },
+        value: {
+          path: request.path,
+          instrumentId: request.instrumentId ?? "",
+          provider: request.provider ?? "",
+          dataset: request.dataset ?? "",
+          granularity: request.granularity ?? "",
+          period: request.period ?? "",
+        },
       }),
     );
     if (frame.kind.case !== "result" || frame.kind.value.body.case !== "importCsv") {
@@ -57,6 +101,7 @@ const api: WorkerApi = {
       tradeCount: bigintToString(body.tradeCount),
       startNs: bigintToString(body.startNs),
       endNs: bigintToString(body.endNs),
+      fileId: body.fileId,
     };
     return result;
   },
@@ -78,6 +123,45 @@ const api: WorkerApi = {
       endNs: bigintToString(item.endNs),
       tradeCount: bigintToString(item.tradeCount),
     }));
+  },
+
+  async listFiles() {
+    const frame = assertResult(
+      await socket.request({
+        case: "listFiles",
+        value: {},
+      }),
+    );
+    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "listFiles") {
+      throw new Error("unexpected files result");
+    }
+    return frame.kind.value.body.value.items.map(mapFileEntry);
+  },
+
+  async removeFile(fileId: string) {
+    const frame = assertResult(
+      await socket.request({
+        case: "removeFile",
+        value: { fileId },
+      }),
+    );
+    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "removeFile") {
+      throw new Error("unexpected remove result");
+    }
+    return { fileId: frame.kind.value.body.value.fileId };
+  },
+
+  async moveFile(fileId: string, provider: string, dataset: string, granularity: string, period: string) {
+    const frame = assertResult(
+      await socket.request({
+        case: "moveFile",
+        value: { fileId, provider, dataset, granularity, period },
+      }),
+    );
+    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "moveFile") {
+      throw new Error("unexpected move result");
+    }
+    return mapFileEntry(frame.kind.value.body.value.file!);
   },
 
   async queryBars(instrumentId: string, barStep: string, startNs = "0", endNs = "0") {
@@ -112,14 +196,7 @@ const api: WorkerApi = {
         },
       }),
     );
-    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "playback") {
-      throw new Error("unexpected playback result");
-    }
-    const ack: PlaybackAck = {
-      playing: frame.kind.value.body.value.playing,
-      speed: frame.kind.value.body.value.speed,
-    };
-    return ack;
+    return playbackAck(frame);
   },
 
   async pause() {
@@ -129,14 +206,17 @@ const api: WorkerApi = {
         value: {},
       }),
     );
-    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "playback") {
-      throw new Error("unexpected pause result");
-    }
-    const ack: PlaybackAck = {
-      playing: frame.kind.value.body.value.playing,
-      speed: frame.kind.value.body.value.speed,
-    };
-    return ack;
+    return playbackAck(frame);
+  },
+
+  async resetPlayback() {
+    const frame = assertResult(
+      await socket.request({
+        case: "resetPlayback",
+        value: {},
+      }),
+    );
+    return playbackAck(frame);
   },
 
   async setSpeed(speed: number) {
@@ -146,14 +226,7 @@ const api: WorkerApi = {
         value: { speed },
       }),
     );
-    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "playback") {
-      throw new Error("unexpected speed result");
-    }
-    const ack: PlaybackAck = {
-      playing: frame.kind.value.body.value.playing,
-      speed: frame.kind.value.body.value.speed,
-    };
-    return ack;
+    return playbackAck(frame);
   },
 };
 

@@ -73,7 +73,14 @@ describe("protobuf contract", () => {
     const listed = encodeCommand(2, { case: "listCatalog", value: {} });
     const imported = encodeCommand(3, {
       case: "importCsv",
-      value: { path: "E:/data/sample.csv", instrumentId: "" },
+      value: {
+        path: "E:/data/sample.csv",
+        instrumentId: "",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "daily",
+        period: "01-08-2026",
+      },
     });
     expect(decodeFrame(listed).kind.case).toBe("command");
     expect(decodeFrame(imported).kind.case).toBe("command");
@@ -83,6 +90,26 @@ describe("protobuf contract", () => {
     if (decodeFrame(imported).kind.case === "command") {
       expect(decodeFrame(imported).kind.value.body.case).toBe("importCsv");
     }
+  });
+
+  it("encodes library and reset commands without leaving empty oneof fields", () => {
+    const listed = encodeCommand(4, { case: "listFiles", value: {} });
+    const removed = encodeCommand(5, { case: "removeFile", value: { fileId: "abc" } });
+    const moved = encodeCommand(6, {
+      case: "moveFile",
+      value: {
+        fileId: "abc",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "monthly",
+        period: "08-2026",
+      },
+    });
+    const reset = encodeCommand(7, { case: "resetPlayback", value: {} });
+    expect(decodeFrame(listed).kind.value.body.case).toBe("listFiles");
+    expect(decodeFrame(removed).kind.value.body.case).toBe("removeFile");
+    expect(decodeFrame(moved).kind.value.body.case).toBe("moveFile");
+    expect(decodeFrame(reset).kind.value.body.case).toBe("resetPlayback");
   });
 });
 

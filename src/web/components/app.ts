@@ -1,7 +1,7 @@
 import { define, html } from "hybrids";
-import "./chart.ts";
 import "./controls.ts";
 import "./status.ts";
+import "./workspace.ts";
 
 export const NemoApp = define({
   tag: "nemo-app",
@@ -14,15 +14,27 @@ export const NemoApp = define({
       <nemo-status></nemo-status>
     </header>
     <nemo-controls></nemo-controls>
-    <nemo-chart></nemo-chart>
+    <nemo-workspace></nemo-workspace>
   `.css`
     :host {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
       gap: 1rem;
-      min-height: 100vh;
+      height: 100%;
+      max-height: 100%;
+      overflow: hidden;
+      min-width: 0;
       padding: 1.25rem 1.5rem 1.5rem;
       box-sizing: border-box;
+    }
+    header,
+    nemo-controls,
+    nemo-workspace {
+      min-width: 0;
+    }
+    nemo-workspace {
+      min-height: 0;
     }
     header {
       display: flex;

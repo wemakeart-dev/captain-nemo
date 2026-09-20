@@ -27,12 +27,24 @@ On start the process prints a Rich banner to **stderr** (engine version, `ws://h
 
 | Color | When |
 | --- | --- |
-| Green | Listening, client connected, import/query/playback succeeded |
-| Orange | Unknown instrument, empty playback range, bad command |
+| Green | Listening, client connected, import/query/playback succeeded, file removed |
+| Orange | Unknown instrument, empty playback range, bad command, unknown file |
 | Red | Import failure, internal dispatch errors, playback task failures (`PLAYBACK_FAILED`) |
-| Dim | Disconnect, list catalog, speed change, playback pause/resume, shutdown |
+| Dim | Disconnect, list catalog/files, speed change, playback pause/reset, move, shutdown |
 
 Logs stay on the session/CLI boundary. The playback clock does **not** log bar deltas or trade-tape frames; Rich `Live` / `Status` / `Progress` are not used.
+
+## Library
+
+File-manager records live in SQLite at `data/catalog/nemo-library.sqlite` (stdlib `sqlite3`, WAL, short-lived connections inside `asyncio.to_thread`). This is **not** IndexedDB: the catalog of record is already under `NEMO_CATALOG`, and a browser DB would desync on refresh, another browser, or cleared site data.
+
+SQLite is not used for candles or trades. Those stay Parquet (`nemo_bars/`, `nemo_trades/`). Rows are small: path, taxonomy, range, counts.
+
+`files` is unique on `source_path` and on `(provider, dataset, granularity, period, file_name)`. `period` is display (`MM-YYYY` or `DD-MM-YYYY`); `period_key` is ISO (`YYYY-MM` / `YYYY-MM-DD`) for sort.
+
+`ListCatalog` is `GROUP BY instrument_id` over this table. Existing catalogs without library rows stay playable only after re-import (same bar as the ns-conversion note below).
+
+Taxonomy is virtual. CSV files stay on disk; **Move** only updates SQLite columns. **Remove** deletes the SQLite row and that `file_id` from Parquet, rebuilds `nemo_bars` / `nemo_trades`, and rolls up the instrument. It does not delete the user’s CSV.
 
 ## Playback
 
@@ -41,6 +53,7 @@ Visualization uses an asyncio clock, not `BacktestEngine.run()`. `PlaybackContro
 - **Play** loads 1-minute bars and the slim trade tape once (parquet cache keyed by path mtime), then ticks at about 30 Hz. Each tick always sends `PlaybackState`. Due bars (capped at 256 per tick) and trades in `(prev_cursor, cursor]` (last 200) go out only when they are due.
 - **Pause** (`StopPlayback`) freezes `cursor_ns` and sends `PlaybackState { playing: false }`. The task is cancelled; parquet is not re-read.
 - **Play again** with `start_ns = 0` (or the paused cursor) **resumes** the same instrument and step when the cursor is still before `end_ns`. It does not snap to the first bar.
+- **Stop** (`ResetPlayback`) pauses if playing, rewinds `cursor_ns` to the session start, clears the trade tape, sends `PlaybackState { playing: false, cursor_ns: start }`, and re-sends a bar snapshot so the cursor mark jumps to the start. Next Play starts from the beginning. Do not overload Pause for this: `StartPlayback` with `start_ns = 0` would otherwise resume mid-range.
 - **Play** at the end of the range, or with a different instrument/step, starts from `start_ns` or the first bar.
 - **Play** while already playing is a no-op.
 - **SetSpeed** rebases the wall clock (`sim0 = cursor`, `wall0 = now`) so the cursor does not jump. The replay multiplier is `cursor = sim0 + (monotonic - wall0) * speed`.
@@ -49,7 +62,7 @@ Visualization uses an asyncio clock, not `BacktestEngine.run()`. `PlaybackContro
 
 ## Ingest
 
-Supported files: Binance Vision **futures / um / daily or monthly / trades**.
+Supported files: Binance Vision **futures / um / daily or monthly / trades**. Other Futures values are UI-visible and rejected with `IMPORT_FAILED`.
 
 Examples:
 
@@ -70,8 +83,10 @@ Flow:
 2. `CryptoPerpetual` for `{SYMBOL}-PERP.BINANCE`
 3. `TradeTickDataWrangler.process` → one `ParquetDataCatalog.write_data` per import (ticks after the last catalog timestamp only, so consecutive daily files stay disjoint)
 4. Merge 1-minute OHLCV parquet for the UI (`nemo_bars/`)
-5. Merge slim trades parquet for the playback tape (`nemo_trades/`), keyed by `trade_id`
-6. Update `nemo-index.json` for `ListCatalog` with the combined range and count
+5. Merge slim trades parquet for the playback tape (`nemo_trades/`), keyed by `trade_id`, tagged with `file_id` so remove can subtract one file
+6. Upsert `nemo-library.sqlite` and roll up `ListCatalog` from the `files` table
+
+Consecutive daily files still merge into one instrument Parquet. Each file keeps its own library row and `file_id` on stored trades.
 
 ## Serve
 
@@ -79,11 +94,15 @@ Each WebSocket connection gets `SessionHello`, then `SocketFrame` commands:
 
 | Command | Effect |
 | --- | --- |
-| `ImportCsv` | Ingest path on disk |
-| `ListCatalog` | Index items |
-| `QueryBars` | Ack + snapshot `BarBatch` (1m resampled to the requested step) |
+| `ImportCsv` | Ingest path on disk with provider / dataset / granularity / period; returns `file_id` |
+| `ListCatalog` | Instrument rollup from SQLite |
+| `ListFiles` | Flat file-manager rows |
+| `RemoveFile` | Drop SQLite row + that `file_id` from Parquet; rebuild bars |
+| `MoveFile` | Update taxonomy columns only |
+| `QueryBars` | Ack + snapshot `BarBatch` (1m resampled to the requested step and range) |
 | `StartPlayback` | Prepare/resume the clock; ack; paced bar deltas, capped trade tape, `PlaybackState` |
 | `StopPlayback` | Pause: freeze cursor, `PlaybackState { playing: false }`, ack |
+| `ResetPlayback` | Rewind to session start, snapshot bars, empty trade tape, ack (`PlaybackAck` like pause) |
 | `SetSpeed` | Rebase the replay multiplier; ack + `PlaybackState` |
 
 Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanoseconds.
@@ -102,9 +121,10 @@ Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanosec
 
 - Headered and headerless CSV
 - Bar aggregation
-- Catalog ingest (Nautilus wrangler + parquet)
-- WebSocket hello / import / query
-- Playback clock (virtual time): 60x pacing, pause/resume cursor, restart at end, speed rebase, trade window, `PLAYBACK_FAILED`
-- WebSocket play → pause → play keeps the cursor
+- Catalog ingest (Nautilus wrangler + parquet) and `file_id` tagging
+- Library CRUD, unique path, period display/key, catalog rollup, merge then remove, move-is-metadata
+- WebSocket hello / import / query / list-remove-move; reject disabled datasets
+- Playback clock (virtual time): 60x pacing, pause/resume cursor, Stop rewind then Play from start, restart at end, speed rebase, trade window, `PLAYBACK_FAILED`
+- WebSocket play → pause → play keeps the cursor; play → reset → play restarts at range start
 - Console banner, color markup, Ctrl+C / shutdown event
 - Protobuf round-trip vs golden bytes (`src/proto/testdata/golden_bar_batch.bin`)

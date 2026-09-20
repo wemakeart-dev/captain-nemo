@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { PlaybackStateSchema, SocketFrameSchema } from "@proto/captain_nemo/v1/wire_pb.ts";
-import { applyFrameBuffer, chartStore, resolvePlayArgs, setStatus } from "./store.ts";
+import { applyFrameBuffer, chartStore, resolvePlayArgs, setFiles, setStatus } from "./store.ts";
 import type { PlaybackState } from "@proto/captain_nemo/v1/wire_pb.ts";
 
 const golden = resolve(dirname(fileURLToPath(import.meta.url)), "../proto/testdata/golden_bar_batch.bin");
@@ -25,6 +25,9 @@ describe("chart store frames", () => {
     chartStore.playback = null;
     chartStore.instrumentId = "";
     chartStore.speed = 1;
+    chartStore.files = [];
+    chartStore.selectedFileId = "";
+    chartStore.activeFileId = "";
     setStatus("Disconnected");
   });
 
@@ -92,11 +95,32 @@ describe("resolvePlayArgs", () => {
     chartStore.playback = null;
     chartStore.instrumentId = "";
     chartStore.speed = 1;
+    chartStore.files = [];
+    chartStore.selectedFileId = "";
+    chartStore.activeFileId = "";
   });
 
   it("resumes from the paused cursor", () => {
     chartStore.instrumentId = "BTCUSDC-PERP.BINANCE";
     chartStore.speed = 60;
+    chartStore.selectedFileId = "file-1";
+    chartStore.files = [
+      {
+        fileId: "file-1",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "daily",
+        period: "01-08-2026",
+        periodKey: "2026-08-01",
+        fileName: "BTCUSDC-trades-2026-08-01.csv",
+        path: "E:/data/file.csv",
+        instrumentId: "BTCUSDC-PERP.BINANCE",
+        symbol: "BTCUSDC",
+        startNs: "1785542400000000000",
+        endNs: "1785543600000000000",
+        tradeCount: "25",
+      },
+    ];
     chartStore.playback = playbackState({
       instrumentId: "BTCUSDC-PERP.BINANCE",
       cursorNs: 1785542460000000000n,
@@ -108,13 +132,14 @@ describe("resolvePlayArgs", () => {
     expect(resolvePlayArgs(chartStore)).toEqual({
       speed: 60,
       startNs: "1785542460000000000",
+      endNs: "1785543600000000000",
     });
   });
 
   it("restarts from the beginning at end of range or when idle", () => {
     chartStore.instrumentId = "BTCUSDC-PERP.BINANCE";
     chartStore.speed = 60;
-    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0" });
+    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0", endNs: "0" });
     chartStore.playback = playbackState({
       instrumentId: "BTCUSDC-PERP.BINANCE",
       cursorNs: 1785543600000000000n,
@@ -123,6 +148,75 @@ describe("resolvePlayArgs", () => {
       startNs: 1785542400000000000n,
       endNs: 1785543600000000000n,
     });
-    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0" });
+    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0", endNs: "0" });
+  });
+
+  it("starts from the selected file after Stop/reset instead of a paused cursor", () => {
+    chartStore.instrumentId = "BTCUSDC-PERP.BINANCE";
+    chartStore.speed = 60;
+    chartStore.selectedFileId = "file-1";
+    chartStore.files = [
+      {
+        fileId: "file-1",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "daily",
+        period: "01-08-2026",
+        periodKey: "2026-08-01",
+        fileName: "BTCUSDC-trades-2026-08-01.csv",
+        path: "E:/data/file.csv",
+        instrumentId: "BTCUSDC-PERP.BINANCE",
+        symbol: "BTCUSDC",
+        startNs: "1785542400000000000",
+        endNs: "1785543600000000000",
+        tradeCount: "25",
+      },
+    ];
+    chartStore.playback = playbackState({
+      instrumentId: "BTCUSDC-PERP.BINANCE",
+      cursorNs: 1785542400000000000n,
+      speed: 60,
+      playing: false,
+      startNs: 1785542400000000000n,
+      endNs: 1785543600000000000n,
+    });
+    expect(resolvePlayArgs(chartStore)).toEqual({
+      speed: 60,
+      startNs: "1785542400000000000",
+      endNs: "1785543600000000000",
+    });
+  });
+});
+
+describe("library selection ids", () => {
+  afterEach(() => {
+    chartStore.files = [];
+    chartStore.selectedFileId = "";
+    chartStore.activeFileId = "";
+    chartStore.instrumentId = "";
+  });
+
+  it("clears active and selected ids when the file leaves the library", () => {
+    const file = {
+      fileId: "file-1",
+      provider: "Binance",
+      dataset: "trades",
+      granularity: "daily",
+      period: "01-08-2026",
+      periodKey: "2026-08-01",
+      fileName: "BTCUSDC-trades-2026-08-01.csv",
+      path: "E:/data/file.csv",
+      instrumentId: "BTCUSDC-PERP.BINANCE",
+      symbol: "BTCUSDC",
+      startNs: "1",
+      endNs: "2",
+      tradeCount: "25",
+    };
+    chartStore.files = [file];
+    chartStore.activeFileId = "file-1";
+    chartStore.selectedFileId = "file-1";
+    setFiles([]);
+    expect(chartStore.activeFileId).toBe("");
+    expect(chartStore.selectedFileId).toBe("");
   });
 });

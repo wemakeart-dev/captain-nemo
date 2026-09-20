@@ -26,12 +26,20 @@ message Command {
     StartPlayback start_playback = 4;
     StopPlayback stop_playback = 5;
     SetSpeed set_speed = 6;
+    ListFiles list_files = 7;
+    RemoveFile remove_file = 8;
+    MoveFile move_file = 9;
+    ResetPlayback reset_playback = 10;
   }
 }
 
 message ImportCsv {
   string path = 1;
   string instrument_id = 2;
+  string provider = 3;
+  string dataset = 4;
+  string granularity = 5;
+  string period = 6;
 }
 
 message ListCatalog {}
@@ -57,12 +65,31 @@ message SetSpeed {
   double speed = 1;
 }
 
+message ListFiles {}
+
+message RemoveFile {
+  string file_id = 1;
+}
+
+message MoveFile {
+  string file_id = 1;
+  string provider = 2;
+  string dataset = 3;
+  string granularity = 4;
+  string period = 5;
+}
+
+message ResetPlayback {}
+
 message CommandResult {
   oneof body {
     ImportCsvResult import_csv = 1;
     ListCatalogResult list_catalog = 2;
     QueryBarsResult query_bars = 3;
     PlaybackAck playback = 4;
+    ListFilesResult list_files = 5;
+    RemoveFileResult remove_file = 6;
+    MoveFileResult move_file = 7;
   }
 }
 
@@ -71,6 +98,7 @@ message ImportCsvResult {
   uint64 trade_count = 2;
   int64 start_ns = 3;
   int64 end_ns = 4;
+  string file_id = 5;
 }
 
 message CatalogItem {
@@ -83,6 +111,34 @@ message CatalogItem {
 
 message ListCatalogResult {
   repeated CatalogItem items = 1;
+}
+
+message FileEntry {
+  string file_id = 1;
+  string provider = 2;
+  string dataset = 3;
+  string granularity = 4;
+  string period = 5;
+  string period_key = 6;
+  string file_name = 7;
+  string path = 8;
+  string instrument_id = 9;
+  string symbol = 10;
+  int64 start_ns = 11;
+  int64 end_ns = 12;
+  uint64 trade_count = 13;
+}
+
+message ListFilesResult {
+  repeated FileEntry items = 1;
+}
+
+message RemoveFileResult {
+  string file_id = 1;
+}
+
+message MoveFileResult {
+  FileEntry file = 1;
 }
 
 message QueryBarsResult {

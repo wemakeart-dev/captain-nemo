@@ -1,9 +1,11 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from captain_nemo_engine.actor import StrategyStreamSeam
-from captain_nemo_engine.ingest import import_csv, load_minute_bars, load_trades
+from captain_nemo_engine.ingest import import_csv, load_minute_bars, load_trades, remove_imported_file, trades_parquet_path
+from captain_nemo_engine.library import LibraryError, list_files, move_file
 from captain_nemo_engine.paths import ensure_generated_path
 
 ensure_generated_path()
@@ -23,7 +25,10 @@ def test_import_csv_writes_catalog_bars_and_trades(tmp_path: Path) -> None:
     assert int(trades["ts_event_ns"].iloc[0]) == 1_785_542_400_000_000_000
     assert int(pd.Timestamp(bars.index[0]).value) == 1_785_542_400_000_000_000
     assert int(pd.Timestamp(bars.index[0]).year) == 2026
-    assert (tmp_path / "nemo-index.json").exists()
+    assert item["file_id"]
+    assert (trades["file_id"] == item["file_id"]).all()
+    assert (tmp_path / "nemo-library.sqlite").exists()
+    assert not (tmp_path / "nemo-index.json").exists()
 
 
 def test_import_merges_adjacent_files_and_chunked_writes(tmp_path: Path) -> None:
@@ -52,6 +57,49 @@ def test_import_merges_adjacent_files_and_chunked_writes(tmp_path: Path) -> None
     assert not bars.empty
     again = import_csv(FIXTURE, tmp_path, chunksize=8)
     assert again["trade_count"] == 27
+    trades = load_trades(tmp_path, second["instrument_id"])
+    assert set(trades["file_id"]) == {first["file_id"], second["file_id"]}
+    assert first["file_id"] == again["file_id"]
+
+
+def test_import_metadata_rejects_disabled_dataset(tmp_path: Path) -> None:
+    with pytest.raises(LibraryError) as exc:
+        import_csv(FIXTURE, tmp_path, dataset="klines", granularity="monthly", period="08-2026")
+    assert exc.value.code == "IMPORT_FAILED"
+
+
+def test_two_daily_files_merge_and_remove_rebuilds(tmp_path: Path) -> None:
+    first = import_csv(FIXTURE, tmp_path, provider="Binance", dataset="trades", granularity="daily", period="01-08-2026")
+    follow = tmp_path / "BTCUSDC-trades-2026-08-02.csv"
+    follow.write_text(
+        "\n".join(
+            [
+                "id,price,qty,quote_qty,time,is_buyer_maker",
+                "25,62833.2,0.022,1382.330,1785543600000,true",
+                "26,62840.0,0.010,628.400,1785543660000,false",
+                "27,62841.5,0.015,942.623,1785543720000,true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    second = import_csv(follow, tmp_path, provider="Binance", dataset="trades", granularity="daily", period="02-08-2026")
+    trades = load_trades(tmp_path, second["instrument_id"])
+    assert len(trades) == 27
+    assert set(trades["file_id"]) == {first["file_id"], second["file_id"]}
+    parquet = trades_parquet_path(tmp_path, second["instrument_id"])
+    before = parquet.read_bytes()
+    moved = move_file(tmp_path, second["file_id"], "Binance", "trades", "monthly", "08-2026")
+    assert moved["period"] == "08-2026"
+    assert parquet.read_bytes() == before
+    remaining = remove_imported_file(tmp_path, first["file_id"])
+    assert remaining["file_id"] == first["file_id"]
+    trades = load_trades(tmp_path, second["instrument_id"])
+    assert (trades["file_id"] == second["file_id"]).all()
+    assert len(trades) == 3
+    bars = load_minute_bars(tmp_path, second["instrument_id"])
+    assert not bars.empty
+    assert [item["file_id"] for item in list_files(tmp_path)] == [second["file_id"]]
 
 
 def test_strategy_stream_seam_serializes_reserved_events() -> None:

@@ -8,13 +8,24 @@ from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 
 from captain_nemo_engine.bars import aggregate_bars
-from captain_nemo_engine.catalog_index import upsert_instrument
 from captain_nemo_engine.csv_loader import instrument_id_from_symbol, iter_trade_chunks, symbol_from_path
 from captain_nemo_engine.instruments import perpetual_from_trades
+from captain_nemo_engine.library import (
+    LibraryError,
+    canonical_dataset,
+    canonical_granularity,
+    canonical_provider,
+    delete_file,
+    get_file,
+    get_file_by_path,
+    normalize_period,
+    resolve_taxonomy,
+    upsert_file,
+)
 
 BARS_DIRNAME = "nemo_bars"
 TRADES_DIRNAME = "nemo_trades"
-STORED_COLUMNS = ["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"]
+STORED_COLUMNS = ["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns", "file_id"]
 
 
 def bars_parquet_path(catalog_root: Path, instrument_id: str) -> Path:
@@ -48,7 +59,7 @@ def _datetime_index_to_ns(index: pd.Index) -> pd.Series:
     return pd.Series(dt.as_unit("ns").astype("int64"), index=index)
 
 
-def _stored_from_chunks(trades: pd.DataFrame) -> pd.DataFrame:
+def _stored_from_chunks(trades: pd.DataFrame, file_id: str) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "trade_id": trades["trade_id"].astype(str),
@@ -57,11 +68,25 @@ def _stored_from_chunks(trades: pd.DataFrame) -> pd.DataFrame:
             "quote_qty": trades["quote_qty"].astype(str),
             "buyer_maker": trades["buyer_maker"].astype(bool),
             "ts_event_ns": _datetime_index_to_ns(trades.index),
+            "file_id": file_id,
         }
     )
 
 
-def _merge_stored(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+def _ensure_file_id(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_stored()
+    if "file_id" not in frame.columns:
+        frame = frame.copy()
+        frame["file_id"] = ""
+    return frame
+
+
+def _merge_stored(existing: pd.DataFrame, incoming: pd.DataFrame, replace_file_id: str = "") -> pd.DataFrame:
+    existing = _ensure_file_id(existing)
+    incoming = _ensure_file_id(incoming)
+    if replace_file_id and not existing.empty:
+        existing = existing[existing["file_id"] != replace_file_id]
     if incoming.empty:
         return existing.reset_index(drop=True) if not existing.empty else _empty_stored()
     if existing.empty:
@@ -88,10 +113,48 @@ def _write_new_ticks(catalog: ParquetDataCatalog, instrument_id: str, ticks: lis
         catalog.write_data(to_write)
 
 
-def import_csv(path: Path, catalog_root: Path, instrument_id: str = "", chunksize: int = 100_000) -> dict:
+def _validate_import_metadata(provider: str, dataset: str, granularity: str, period: str) -> None:
+    if provider:
+        canonical_provider(provider)
+    if dataset:
+        canonical_dataset(dataset)
+    if granularity:
+        canonical_granularity(granularity)
+        if period:
+            normalize_period(granularity, period)
+
+
+def _write_instrument_parquets(catalog_root: Path, instrument_id: str, stored: pd.DataFrame) -> None:
+    bars_path = _bars_path(catalog_root, instrument_id)
+    trades_path = _trades_path(catalog_root, instrument_id)
+    if stored.empty:
+        bars_path.unlink(missing_ok=True)
+        trades_path.unlink(missing_ok=True)
+        return
+    bars_source = stored.copy()
+    bars_source.index = pd.to_datetime(bars_source["ts_event_ns"], utc=True, unit="ns")
+    minute_bars = aggregate_bars(bars_source, "1m")
+    bars_path.parent.mkdir(parents=True, exist_ok=True)
+    trades_path.parent.mkdir(parents=True, exist_ok=True)
+    minute_bars.to_parquet(bars_path)
+    stored.to_parquet(trades_path, index=False)
+
+
+def import_csv(
+    path: Path,
+    catalog_root: Path,
+    instrument_id: str = "",
+    chunksize: int = 100_000,
+    *,
+    provider: str = "",
+    dataset: str = "",
+    granularity: str = "",
+    period: str = "",
+) -> dict:
     path = path.resolve()
     if not path.is_file():
         raise FileNotFoundError(str(path))
+    _validate_import_metadata(provider, dataset, granularity, period)
     symbol = symbol_from_path(path)
     resolved_id = instrument_id or instrument_id_from_symbol(symbol)
     catalog_root.mkdir(parents=True, exist_ok=True)
@@ -116,25 +179,64 @@ def import_csv(path: Path, catalog_root: Path, instrument_id: str = "", chunksiz
         trade_frames.append(chunk)
     if not instrument_written or not trade_frames:
         raise ValueError("no trades found in csv")
-    incoming = _stored_from_chunks(pd.concat(trade_frames, axis=0).sort_index())
-    stored = _merge_stored(load_trades(catalog_root, resolved_id), incoming)
+    existing_file = get_file_by_path(catalog_root, str(path))
+    file_id = existing_file["file_id"] if existing_file else ""
+    incoming = _stored_from_chunks(pd.concat(trade_frames, axis=0).sort_index(), file_id or "pending")
+    file_start = int(incoming["ts_event_ns"].min())
+    file_end = int(incoming["ts_event_ns"].max())
+    taxonomy = resolve_taxonomy(
+        path,
+        provider=provider,
+        dataset=dataset,
+        granularity=granularity,
+        period=period,
+        start_ns=file_start,
+    )
+    record = upsert_file(
+        catalog_root,
+        {
+            "file_id": file_id,
+            "provider": taxonomy["provider"],
+            "dataset": taxonomy["dataset"],
+            "granularity": taxonomy["granularity"],
+            "period": taxonomy["period"],
+            "period_key": taxonomy["period_key"],
+            "file_name": taxonomy["file_name"],
+            "source_path": str(path),
+            "instrument_id": resolved_id,
+            "symbol": symbol,
+            "start_ns": file_start,
+            "end_ns": file_end,
+            "trade_count": int(len(incoming)),
+        },
+    )
+    file_id = record["file_id"]
+    incoming["file_id"] = file_id
+    stored = _merge_stored(load_trades(catalog_root, resolved_id), incoming, replace_file_id=file_id)
     _write_new_ticks(catalog, resolved_id, ticks)
-    bars_source = stored.copy()
-    bars_source.index = pd.to_datetime(bars_source["ts_event_ns"], utc=True, unit="ns")
-    minute_bars = aggregate_bars(bars_source, "1m")
-    _bars_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
-    _trades_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
-    minute_bars.to_parquet(_bars_path(catalog_root, resolved_id))
-    stored.to_parquet(_trades_path(catalog_root, resolved_id), index=False)
-    item = {
+    _write_instrument_parquets(catalog_root, resolved_id, stored)
+    return {
+        **record,
         "instrument_id": resolved_id,
         "symbol": symbol,
-        "start_ns": int(stored["ts_event_ns"].min()),
-        "end_ns": int(stored["ts_event_ns"].max()),
+        "start_ns": int(stored["ts_event_ns"].min()) if not stored.empty else file_start,
+        "end_ns": int(stored["ts_event_ns"].max()) if not stored.empty else file_end,
         "trade_count": int(len(stored)),
+        "file_trade_count": int(len(incoming)),
         "source_path": str(path),
     }
-    upsert_instrument(catalog_root, item)
+
+
+def remove_imported_file(catalog_root: Path, file_id: str) -> dict:
+    item = get_file(catalog_root, file_id)
+    if item is None:
+        raise LibraryError("UNKNOWN_FILE", file_id)
+    instrument_id = item["instrument_id"]
+    stored = load_trades(catalog_root, instrument_id)
+    if not stored.empty:
+        stored = stored[stored["file_id"] != file_id].reset_index(drop=True)
+    delete_file(catalog_root, file_id)
+    _write_instrument_parquets(catalog_root, instrument_id, stored)
     return item
 
 
@@ -149,4 +251,4 @@ def load_trades(catalog_root: Path, instrument_id: str) -> pd.DataFrame:
     path = _trades_path(catalog_root, instrument_id)
     if not path.exists():
         return _empty_stored()
-    return pd.read_parquet(path)
+    return _ensure_file_id(pd.read_parquet(path))

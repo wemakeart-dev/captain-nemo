@@ -10,9 +10,9 @@ from websockets.asyncio.server import ServerConnection
 from websockets.asyncio.server import serve as ws_serve
 
 from captain_nemo_engine.bars import resample_bars
-from captain_nemo_engine.catalog_index import load_index
 from captain_nemo_engine.console import log_error, log_info, log_success, log_warn
-from captain_nemo_engine.ingest import import_csv, load_minute_bars
+from captain_nemo_engine.ingest import import_csv, load_minute_bars, remove_imported_file
+from captain_nemo_engine.library import LibraryError, list_files, list_instruments, move_file
 from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
 from captain_nemo_engine.playback import PlaybackController, PlaybackError, bars_to_proto, filter_range
 from captain_nemo_engine.wire import decode_frame, error_frame, hello_frame, new_frame
@@ -22,6 +22,29 @@ ensure_generated_path()
 from captain_nemo.v1 import wire_pb2 as wire
 
 _SHUTDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None))
+
+
+def _fill_file_entry(entry: wire.FileEntry, item: dict[str, Any]) -> None:
+    entry.file_id = item["file_id"]
+    entry.provider = item["provider"]
+    entry.dataset = item["dataset"]
+    entry.granularity = item["granularity"]
+    entry.period = item["period"]
+    entry.period_key = item["period_key"]
+    entry.file_name = item["file_name"]
+    entry.path = item.get("path") or item.get("source_path", "")
+    entry.instrument_id = item["instrument_id"]
+    entry.symbol = item.get("symbol", "")
+    entry.start_ns = int(item.get("start_ns", 0))
+    entry.end_ns = int(item.get("end_ns", 0))
+    entry.trade_count = int(item.get("trade_count", 0))
+
+
+def _playback_ack(cid: int, playing: bool, speed: float) -> bytes:
+    result = new_frame(cid)
+    result.result.playback.playing = playing
+    result.result.playback.speed = speed
+    return result.SerializeToString()
 
 
 def _peer(connection: ServerConnection) -> str:
@@ -110,25 +133,29 @@ class EngineSession:
             await self._import_csv(cid, command.import_csv)
         elif body == "list_catalog":
             await self._list_catalog(cid)
+        elif body == "list_files":
+            await self._list_files(cid)
+        elif body == "remove_file":
+            await self._remove_file(cid, command.remove_file)
+        elif body == "move_file":
+            await self._move_file(cid, command.move_file)
         elif body == "query_bars":
             await self._query_bars(cid, command.query_bars)
         elif body == "start_playback":
             await self._start_playback(cid, command.start_playback)
         elif body == "stop_playback":
             await self.playback.stop()
-            log_info("playback stopped")
-            result = new_frame(cid)
-            result.result.playback.playing = False
-            result.result.playback.speed = self.playback.speed
-            await self.send(result.SerializeToString())
+            log_info("playback paused")
+            await self.send(_playback_ack(cid, False, self.playback.speed))
+        elif body == "reset_playback":
+            await self.playback.reset()
+            log_info("playback reset")
+            await self.send(_playback_ack(cid, False, self.playback.speed))
         elif body == "set_speed":
             speed = command.set_speed.speed
             self.playback.set_speed(speed)
             log_info(f"speed set to {self.playback.speed:g}x")
-            result = new_frame(cid)
-            result.result.playback.playing = self.playback.playing
-            result.result.playback.speed = self.playback.speed
-            await self.send(result.SerializeToString())
+            await self.send(_playback_ack(cid, self.playback.playing, self.playback.speed))
             if self.playback.instrument_id:
                 await self.send(self.playback.state_frame())
         else:
@@ -138,10 +165,23 @@ class EngineSession:
     async def _import_csv(self, cid: int, payload: wire.ImportCsv) -> None:
         log_info(f"import started {payload.path}")
         try:
-            item = import_csv(Path(payload.path), self.catalog_root, payload.instrument_id)
+            item = await asyncio.to_thread(
+                import_csv,
+                Path(payload.path),
+                self.catalog_root,
+                payload.instrument_id,
+                provider=payload.provider,
+                dataset=payload.dataset,
+                granularity=payload.granularity,
+                period=payload.period,
+            )
         except FileNotFoundError:
             log_error(f"import failed: path not found {payload.path}")
             await self.send(error_frame(cid, "INVALID_PATH", payload.path))
+            return
+        except LibraryError as exc:
+            log_error(f"import failed: {exc.message}")
+            await self.send(error_frame(cid, exc.code, exc.message))
             return
         except Exception as exc:
             log_error(f"import failed: {exc}")
@@ -154,21 +194,70 @@ class EngineSession:
         body.trade_count = int(item["trade_count"])
         body.start_ns = int(item["start_ns"])
         body.end_ns = int(item["end_ns"])
+        body.file_id = item["file_id"]
         await self.send(result.SerializeToString())
 
     async def _list_catalog(self, cid: int) -> None:
-        payload = load_index(self.catalog_root)
-        count = len(payload.get("instruments", []))
-        log_info(f"list catalog ({count} instruments)")
+        items = await asyncio.to_thread(list_instruments, self.catalog_root)
+        log_info(f"list catalog ({len(items)} instruments)")
         result = new_frame(cid)
         listing = result.result.list_catalog
-        for item in payload.get("instruments", []):
+        for item in items:
             entry = listing.items.add()
             entry.instrument_id = item["instrument_id"]
             entry.symbol = item.get("symbol", "")
             entry.start_ns = int(item.get("start_ns", 0))
             entry.end_ns = int(item.get("end_ns", 0))
             entry.trade_count = int(item.get("trade_count", 0))
+        await self.send(result.SerializeToString())
+
+    async def _list_files(self, cid: int) -> None:
+        items = await asyncio.to_thread(list_files, self.catalog_root)
+        log_info(f"list files ({len(items)} files)")
+        result = new_frame(cid)
+        listing = result.result.list_files
+        for item in items:
+            _fill_file_entry(listing.items.add(), item)
+        await self.send(result.SerializeToString())
+
+    async def _remove_file(self, cid: int, payload: wire.RemoveFile) -> None:
+        try:
+            await asyncio.to_thread(remove_imported_file, self.catalog_root, payload.file_id)
+        except LibraryError as exc:
+            log_warn(f"remove file failed: {exc.message}")
+            await self.send(error_frame(cid, exc.code, exc.message))
+            return
+        except Exception as exc:
+            log_error(f"remove file failed: {exc}")
+            await self.send(error_frame(cid, "IMPORT_FAILED", str(exc)))
+            return
+        log_success(f"removed file {payload.file_id}")
+        result = new_frame(cid)
+        result.result.remove_file.file_id = payload.file_id
+        await self.send(result.SerializeToString())
+
+    async def _move_file(self, cid: int, payload: wire.MoveFile) -> None:
+        try:
+            item = await asyncio.to_thread(
+                move_file,
+                self.catalog_root,
+                payload.file_id,
+                payload.provider,
+                payload.dataset,
+                payload.granularity,
+                payload.period,
+            )
+        except LibraryError as exc:
+            log_warn(f"move file failed: {exc.message}")
+            await self.send(error_frame(cid, exc.code, exc.message))
+            return
+        except Exception as exc:
+            log_error(f"move file failed: {exc}")
+            await self.send(error_frame(cid, "IMPORT_FAILED", str(exc)))
+            return
+        log_info(f"moved file {payload.file_id}")
+        result = new_frame(cid)
+        _fill_file_entry(result.result.move_file.file, item)
         await self.send(result.SerializeToString())
 
     async def _query_bars(self, cid: int, payload: wire.QueryBars) -> None:

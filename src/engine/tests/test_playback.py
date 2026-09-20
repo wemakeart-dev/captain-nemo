@@ -194,6 +194,37 @@ async def test_pause_then_play_does_not_snap_to_start(
 
 
 @pytest.mark.asyncio
+async def test_reset_then_play_restarts_at_range_start(
+    controller: PlaybackController, clock: VirtualClock, frames: list[bytes]
+) -> None:
+    await controller.start(INSTRUMENT, 0, 0, 60.0, "1m")
+    await wait_sleeping(clock)
+    await run_for(clock, 1.0)
+    paused = controller.cursor_ns
+    assert paused > START_NS
+    frames.clear()
+    await controller.reset()
+    assert controller.playing is False
+    assert controller.cursor_ns == START_NS
+    states = playback_states(frames)
+    assert states
+    assert states[-1].cursor_ns == START_NS
+    assert states[-1].playing is False
+    assert any(batch.snapshot for batch in bar_batches(frames))
+    tapes = trade_batches(frames)
+    assert tapes
+    assert list(tapes[-1].trades) == []
+    frames.clear()
+    mode = await controller.start(INSTRUMENT, 0, 0, 60.0, "1m")
+    assert mode in {"resume", "start"}
+    await wait_sleeping(clock)
+    states = playback_states(frames)
+    assert states
+    assert states[0].cursor_ns == START_NS
+    assert states[0].cursor_ns != paused
+
+
+@pytest.mark.asyncio
 async def test_play_at_end_restarts_from_range_start(
     controller: PlaybackController, clock: VirtualClock, frames: list[bytes]
 ) -> None:

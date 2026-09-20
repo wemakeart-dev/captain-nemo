@@ -23,9 +23,9 @@ v1 runs on **Windows 10 x64** only. The engine binds `127.0.0.1`. There is no cl
 
 | Layer | Path | Role |
 | --- | --- | --- |
-| Web | [`src/web`](src/web) | HybridsJS UI and Apache ECharts candlestick chart |
+| Web | [`src/web`](src/web) | HybridsJS UI, file manager, and Apache ECharts candlestick chart |
 | Worker | [`src/worker`](src/worker) | Browser Web Worker: WebSocket owner, conflation, transferable protobuf frames |
-| Engine | [`src/engine`](src/engine) | Python / Nautilus ingest, Parquet catalog, paced playback, protobuf WebSocket |
+| Engine | [`src/engine`](src/engine) | Python / Nautilus ingest, SQLite library, Parquet catalog, paced playback, protobuf WebSocket |
 
 Wire types are generated from [`src/proto`](src/proto). Start at the [documentation index](__docs/README.md) to pick a layer:
 
@@ -39,6 +39,7 @@ Wire types are generated from [`src/proto`](src/proto). Start at the [documentat
 - **uv** for Python (Nautilus Trader wheel, pytest, protobuf, websockets, Rich)
 - Protobuf as the single source of truth between engine, worker, and web
 - WebSocket binary frames on localhost
+- SQLite (`nemo-library.sqlite`) for the file-manager catalog next to the engine
 
 Do not use npm, pip, pnpm, poetry, or conda as project package managers.
 
@@ -66,9 +67,11 @@ yarn engine:dev
 yarn web:dev
 ```
 
-Open `http://127.0.0.1:5173`. Connect to `ws://127.0.0.1:8765`, import a Binance Vision UM trades CSV (daily or monthly, headered or headerless), load the chart, then Play. Pause freezes the cursor; Play resumes from that timestamp. Speed is the dropdown (1x–60x).
+Open `http://127.0.0.1:5173`. Connect to `ws://127.0.0.1:8765`. **Import** opens the Import Data modal (provider, futures, and time period are required). CSV path can be filled in the toolbar first or in the modal. Imported files appear in the file manager.
 
-CSV files stay on disk. The UI sends a filesystem path; it does not upload the file through the browser.
+Click a file name in the file manager, then **Select Data** to load that range on the chart. **Remove** and **Move** use the same highlighted file. Those three buttons stay disabled until a file name is clicked. Play, Pause, and Stop stay disabled until a file is selected for the chart. Pause freezes the cursor; Play resumes from that timestamp. Stop rewinds to the start of the selected file. Speed is the dropdown (1x–60x).
+
+CSV files stay on disk. The UI sends a filesystem path; it does not upload the file through the browser. Remove deletes the library row and stored trades for that file, not the original CSV.
 
 ## Tests
 
