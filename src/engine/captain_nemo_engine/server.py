@@ -14,7 +14,7 @@ from captain_nemo_engine.catalog_index import load_index
 from captain_nemo_engine.console import log_error, log_info, log_success, log_warn
 from captain_nemo_engine.ingest import import_csv, load_minute_bars
 from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
-from captain_nemo_engine.playback import PlaybackController, bars_to_proto, filter_range, playback_state_frame
+from captain_nemo_engine.playback import PlaybackController, PlaybackError, bars_to_proto, filter_range
 from captain_nemo_engine.wire import decode_frame, error_frame, hello_frame, new_frame
 
 ensure_generated_path()
@@ -94,7 +94,7 @@ class EngineSession:
                     log_error(f"internal error: {exc}")
                     await self.send(error_frame(0, "INTERNAL", str(exc)))
         finally:
-            await self.playback.stop()
+            await self.playback.stop(emit=False)
             log_info(f"client disconnected {peer}")
 
     async def _dispatch(self, frame: wire.SocketFrame) -> None:
@@ -123,12 +123,14 @@ class EngineSession:
             await self.send(result.SerializeToString())
         elif body == "set_speed":
             speed = command.set_speed.speed
-            self.playback.speed = speed if speed > 0 else 1.0
+            self.playback.set_speed(speed)
             log_info(f"speed set to {self.playback.speed:g}x")
             result = new_frame(cid)
             result.result.playback.playing = self.playback.playing
             result.result.playback.speed = self.playback.speed
             await self.send(result.SerializeToString())
+            if self.playback.instrument_id:
+                await self.send(self.playback.state_frame())
         else:
             log_warn("unknown command")
             await self.send(error_frame(cid, "BAD_COMMAND", "unknown command"))
@@ -186,41 +188,32 @@ class EngineSession:
 
     async def _start_playback(self, cid: int, payload: wire.StartPlayback) -> None:
         step = payload.bar_step or "1m"
-        minute = load_minute_bars(self.catalog_root, payload.instrument_id)
-        if minute.empty:
-            log_warn(f"unknown instrument {payload.instrument_id}")
-            await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", payload.instrument_id))
-            return
-        bars = resample_bars(filter_range(minute, payload.start_ns, payload.end_ns), step)
-        if bars.empty:
-            log_warn(f"empty playback range {payload.instrument_id}")
-            await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", "no bars in range"))
-            return
-        start_value = int(bars.index[0].value)
-        end_value = int(bars.index[-1].value)
         speed = payload.speed or 1.0
+        try:
+            mode = await self.playback.prepare(
+                payload.instrument_id,
+                payload.start_ns,
+                payload.end_ns,
+                speed,
+                step,
+            )
+        except PlaybackError as exc:
+            if exc.message == "no bars in range":
+                log_warn(f"empty playback range {payload.instrument_id}")
+            else:
+                log_warn(f"unknown instrument {payload.instrument_id}")
+            await self.send(error_frame(cid, exc.code, exc.message))
+            return
         result = new_frame(cid)
         result.result.playback.playing = True
-        result.result.playback.speed = speed
+        result.result.playback.speed = self.playback.speed
         await self.send(result.SerializeToString())
-        await self.send(
-            playback_state_frame(
-                payload.instrument_id,
-                start_value,
-                speed,
-                True,
-                start_value,
-                end_value,
-            )
-        )
-        log_success(f"playback started {payload.instrument_id} {step} {speed:g}x")
-        await self.playback.start(
-            payload.instrument_id,
-            payload.start_ns,
-            payload.end_ns,
-            speed,
-            step,
-        )
+        if mode != "noop":
+            self.playback.launch()
+            if mode == "resume":
+                log_info(f"playback resumed {payload.instrument_id} {step} {self.playback.speed:g}x")
+            else:
+                log_success(f"playback started {payload.instrument_id} {step} {self.playback.speed:g}x")
 
 
 async def serve(

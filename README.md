@@ -66,7 +66,7 @@ yarn engine:dev
 yarn web:dev
 ```
 
-Open `http://127.0.0.1:5173`. Connect to `ws://127.0.0.1:8765`, import a Binance Vision UM trades CSV (daily or monthly, headered or headerless), load the chart, then play.
+Open `http://127.0.0.1:5173`. Connect to `ws://127.0.0.1:8765`, import a Binance Vision UM trades CSV (daily or monthly, headered or headerless), load the chart, then Play. Pause freezes the cursor; Play resumes from that timestamp. Speed is the dropdown (1x–60x).
 
 CSV files stay on disk. The UI sends a filesystem path; it does not upload the file through the browser.
 

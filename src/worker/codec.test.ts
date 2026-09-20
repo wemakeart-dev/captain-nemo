@@ -133,4 +133,47 @@ describe("conflator", () => {
       expect(decodeFrame(flushed[1][0]).kind.value.instrumentId).toBe("B");
     }
   });
+
+  it("keeps a later paused playback frame over an earlier playing one", () => {
+    const flushed: Uint8Array[][] = [];
+    const conflator = new Conflator(
+      (frames) => flushed.push(frames),
+      10_000,
+      (bytes) => {
+        const frame = decodeFrame(bytes);
+        if (frame.kind.case === "playback") {
+          return "playback";
+        }
+        return "pass";
+      },
+    );
+    const playing = toBinary(
+      SocketFrameSchema,
+      create(SocketFrameSchema, {
+        kind: {
+          case: "playback",
+          value: { instrumentId: "A", playing: true, cursorNs: 10n, speed: 60 },
+        },
+      }),
+    );
+    const paused = toBinary(
+      SocketFrameSchema,
+      create(SocketFrameSchema, {
+        kind: {
+          case: "playback",
+          value: { instrumentId: "A", playing: false, cursorNs: 20n, speed: 60 },
+        },
+      }),
+    );
+    conflator.push(playing);
+    conflator.push(paused);
+    conflator.emit();
+    expect(flushed).toHaveLength(1);
+    const frame = decodeFrame(flushed[0][0]);
+    expect(frame.kind.case).toBe("playback");
+    if (frame.kind.case === "playback") {
+      expect(frame.kind.value.playing).toBe(false);
+      expect(frame.kind.value.cursorNs).toBe(20n);
+    }
+  });
 });

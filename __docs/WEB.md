@@ -20,7 +20,7 @@ The web layer is a Vite app rooted at `src/web`. It is a HybridsJS custom-elemen
 | `src/web/components/chart.ts` | ECharts host; `observe` applies store snapshots |
 | `src/web/components/status.ts` | Connection / import status |
 | `src/web/chart/options.ts` | Pure option builder used by tests |
-| `src/web/store.ts` | Module-level candles, trades, playback cursor |
+| `src/web/store.ts` | Module-level candles, trades, playback cursor, speed, `resolvePlayArgs` |
 | `src/web/worker-client.ts` | Worker + RPC + transferable frame listener |
 
 ## Data path
@@ -44,6 +44,10 @@ Controls call `engineApi` (`WorkerApi`):
 - `queryBars(instrumentId, barStep)`
 - `play` / `pause` / `setSpeed`
 
+`chartStore.speed` is the speed dropdown’s source of truth (default 1). Play sends that value, not a stale `PlaybackState`. If playback is paused mid-range, `resolvePlayArgs` sends the current `cursorNs` so the engine resumes instead of rewinding to the first bar. Play is a no-op while `playback.playing` is true. Pause sets status to Paused; a `PLAYBACK_FAILED` engine error sets status to Playback failed.
+
+`PlaybackState` frames also update `chartStore.speed` when the engine reports a positive speed.
+
 ## Run
 
 ```powershell
@@ -54,4 +58,4 @@ The worker TypeScript is bundled by Vite (`worker.format = "es"`). Regenerated p
 
 ## Tests
 
-`yarn test:web` runs Vitest + happy-dom against option builders, Hybrids status rendering, and golden `BarBatch` store application.
+`yarn test:web` runs Vitest + happy-dom against option builders, Hybrids status rendering, golden `BarBatch` store application, `PlaybackState` / trade-tape updates, and `resolvePlayArgs` resume vs restart.

@@ -9,9 +9,15 @@ export type ChartSnapshot = {
   candles: CandlePoint[];
   trades: Trade[];
   playback: PlaybackState | null;
+  speed: number;
   status: string;
   connected: boolean;
   catalog: { instrumentId: string; symbol: string; tradeCount: string }[];
+};
+
+export type PlayArgs = {
+  speed: number;
+  startNs: string;
 };
 
 const listeners = new Set<() => void>();
@@ -22,6 +28,7 @@ export const chartStore: ChartSnapshot = {
   candles: [],
   trades: [],
   playback: null,
+  speed: 1,
   status: "Disconnected",
   connected: false,
   catalog: [],
@@ -66,6 +73,26 @@ export function setBarStep(barStep: string): void {
   notify();
 }
 
+export function setSpeed(speed: number): void {
+  chartStore.speed = speed > 0 ? speed : 1;
+  notify();
+}
+
+export function resolvePlayArgs(store: ChartSnapshot): PlayArgs {
+  const speed = store.speed > 0 ? store.speed : 1;
+  const playback = store.playback;
+  if (
+    playback &&
+    !playback.playing &&
+    playback.cursorNs > 0n &&
+    playback.cursorNs < playback.endNs &&
+    playback.instrumentId === store.instrumentId
+  ) {
+    return { speed, startNs: playback.cursorNs.toString() };
+  }
+  return { speed, startNs: "0" };
+}
+
 function nsToMs(value: bigint): number {
   return Number(value / 1_000_000n);
 }
@@ -106,6 +133,9 @@ export function applyFrameBuffer(buffer: ArrayBuffer): void {
   }
   if (frame.kind.case === "playback") {
     chartStore.playback = frame.kind.value;
+    if (frame.kind.value.speed > 0) {
+      chartStore.speed = frame.kind.value.speed;
+    }
     notify();
   }
 }

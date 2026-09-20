@@ -2,10 +2,12 @@ import { define, html } from "hybrids";
 import { engineApi } from "../session.ts";
 import {
   chartStore,
+  resolvePlayArgs,
   setBarStep,
   setCatalog,
   setConnected,
   setInstrument,
+  setSpeed,
   setStatus,
   subscribe,
 } from "../store.ts";
@@ -83,11 +85,16 @@ async function play() {
   if (!engineApi || !chartStore.instrumentId) {
     return;
   }
+  if (chartStore.playback?.playing) {
+    return;
+  }
   try {
-    await engineApi.play(chartStore.instrumentId, chartStore.barStep, Number(chartStore.playback?.speed || 1));
+    const args = resolvePlayArgs(chartStore);
+    await engineApi.play(chartStore.instrumentId, chartStore.barStep, args.speed, args.startNs);
     setStatus("Playing");
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(message.includes("PLAYBACK_FAILED") ? "Playback failed" : message);
   }
 }
 
@@ -165,8 +172,10 @@ function bindControls(host: ControlsHost) {
   const speedSelect = root.querySelector("[data-field=speed]") as HTMLSelectElement | null;
   if (speedSelect) {
     speedSelect.onchange = () => {
+      const speed = Number(speedSelect.value);
+      setSpeed(speed);
       if (engineApi) {
-        void engineApi.setSpeed(Number(speedSelect.value));
+        void engineApi.setSpeed(speed);
       }
     };
   }
@@ -213,7 +222,9 @@ export const NemoControls = define({
         <label>
           Speed
           <select data-field="speed">
-            ${[1, 2, 5, 10, 60].map((speed) => html`<option value="${speed}">${speed}x</option>`)}
+            ${[1, 2, 5, 10, 60].map(
+              (speed) => html`<option value="${speed}" selected="${speed === chartStore.speed}">${speed}x</option>`,
+            )}
           </select>
         </label>
       </form>

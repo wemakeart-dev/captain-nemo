@@ -29,10 +29,23 @@ On start the process prints a Rich banner to **stderr** (engine version, `ws://h
 | --- | --- |
 | Green | Listening, client connected, import/query/playback succeeded |
 | Orange | Unknown instrument, empty playback range, bad command |
-| Red | Import failure, internal dispatch errors |
-| Dim | Disconnect, list catalog, speed change, shutdown |
+| Red | Import failure, internal dispatch errors, playback task failures (`PLAYBACK_FAILED`) |
+| Dim | Disconnect, list catalog, speed change, playback pause/resume, shutdown |
 
 Logs stay on the session/CLI boundary. The playback clock does **not** log bar deltas or trade-tape frames; Rich `Live` / `Status` / `Progress` are not used.
+
+## Playback
+
+Visualization uses an asyncio clock, not `BacktestEngine.run()`. `PlaybackController` keeps a session: instrument, bar step, range, cursor, and speed.
+
+- **Play** loads 1-minute bars and the slim trade tape once (parquet cache keyed by path mtime), then ticks at about 30 Hz. Each tick always sends `PlaybackState`. Due bars (capped at 256 per tick) and trades in `(prev_cursor, cursor]` (last 200) go out only when they are due.
+- **Pause** (`StopPlayback`) freezes `cursor_ns` and sends `PlaybackState { playing: false }`. The task is cancelled; parquet is not re-read.
+- **Play again** with `start_ns = 0` (or the paused cursor) **resumes** the same instrument and step when the cursor is still before `end_ns`. It does not snap to the first bar.
+- **Play** at the end of the range, or with a different instrument/step, starts from `start_ns` or the first bar.
+- **Play** while already playing is a no-op.
+- **SetSpeed** rebases the wall clock (`sim0 = cursor`, `wall0 = now`) so the cursor does not jump. The replay multiplier is `cursor = sim0 + (monotonic - wall0) * speed`.
+- Trade lookup is `numpy.searchsorted` on a sorted `int64` timestamp vector. Proto encoding walks column arrays, not `iterrows`. Catalog reads run in `asyncio.to_thread`.
+- Clock exceptions send `Error { code: PLAYBACK_FAILED }` and a red log line. They do not leave the UI stuck on “Playing”.
 
 ## Ingest
 
@@ -69,9 +82,9 @@ Each WebSocket connection gets `SessionHello`, then `SocketFrame` commands:
 | `ImportCsv` | Ingest path on disk |
 | `ListCatalog` | Index items |
 | `QueryBars` | Ack + snapshot `BarBatch` (1m resampled to the requested step) |
-| `StartPlayback` | Paced bar deltas, capped trade tape, `PlaybackState` |
-| `StopPlayback` | Cancel the playback task |
-| `SetSpeed` | Change the asyncio replay multiplier |
+| `StartPlayback` | Prepare/resume the clock; ack; paced bar deltas, capped trade tape, `PlaybackState` |
+| `StopPlayback` | Pause: freeze cursor, `PlaybackState { playing: false }`, ack |
+| `SetSpeed` | Rebase the replay multiplier; ack + `PlaybackState` |
 
 Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanoseconds.
 
@@ -91,5 +104,7 @@ Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanosec
 - Bar aggregation
 - Catalog ingest (Nautilus wrangler + parquet)
 - WebSocket hello / import / query
+- Playback clock (virtual time): 60x pacing, pause/resume cursor, restart at end, speed rebase, trade window, `PLAYBACK_FAILED`
+- WebSocket play → pause → play keeps the cursor
 - Console banner, color markup, Ctrl+C / shutdown event
 - Protobuf round-trip vs golden bytes (`src/proto/testdata/golden_bar_batch.bin`)
