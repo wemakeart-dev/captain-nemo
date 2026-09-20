@@ -15,7 +15,7 @@
 
 # Captain Nemo
 
-Captain Nemo is a local-only research terminal. It wraps [Nautilus Trader](https://nautilustrader.io/) so you can visualize Binance Vision USD-M futures trade history and later train automated strategies against the same catalog.
+Captain Nemo is a local-only research terminal. It wraps [Nautilus Trader](https://nautilustrader.io/) so you can visualize [Binance Vision USD-M](https://data.binance.vision/) futures trade history and later train automated strategies against the same catalog.
 
 v1 runs on **Windows 10 x64** only. The engine binds `127.0.0.1`. There is no cloud service and no live exchange session.
 
