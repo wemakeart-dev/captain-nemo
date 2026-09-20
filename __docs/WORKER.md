@@ -22,10 +22,11 @@ Command RPC uses a small `postMessage` protocol (`{ nemo: "rpc" }`). Market data
 `src/worker/index.ts` handles RPC methods:
 
 - `connect` / `disconnect`
-- `importCsv` (filesystem path string; not file bytes)
+- `importCsv` (request object: filesystem path plus provider / dataset / granularity / period; not file bytes)
 - `listCatalog`
+- `listFiles` / `removeFile` / `moveFile`
 - `queryBars`
-- `play` / `pause` / `setSpeed`
+- `play` / `pause` / `resetPlayback` / `setSpeed`
 
 Nanosecond integers are returned to the UI as strings so RPC payloads stay JSON-safe.
 
@@ -54,4 +55,4 @@ The UI listens for `{ nemo: "frame", buffer, byteLength, kind }` and `{ nemo: "r
 
 ## Tests
 
-`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es).
+`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es), including library / reset commands encoded without empty oneofs.

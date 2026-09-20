@@ -241,6 +241,42 @@ class PlaybackController:
             except Exception:
                 pass
 
+    def rewind(self) -> None:
+        self.playing = False
+        if self.start_ns:
+            self.cursor_ns = self.start_ns
+        tape = self._tape
+        if tape is None:
+            self._bar_index = 0
+            self._last_trade_ns = self.cursor_ns - 1 if self.cursor_ns else 0
+            return
+        bar_ts = tape.bar_ts
+        self._bar_index = int(np.searchsorted(bar_ts, self.cursor_ns, side="left")) if bar_ts.size else 0
+        self._last_trade_ns = self.cursor_ns - 1 if self.cursor_ns else 0
+
+    def range_bars(self) -> pd.DataFrame:
+        tape = self._tape
+        if tape is None or tape.bars.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "trade_count"])
+        start = int(np.searchsorted(tape.bar_ts, self.start_ns, side="left")) if self.start_ns else 0
+        end = self._range_hi if self._range_hi else tape.bar_ts.size
+        if start >= end:
+            return tape.bars.iloc[0:0]
+        return tape.bars.iloc[start:end]
+
+    async def reset(self) -> None:
+        await self.stop(emit=False)
+        self.rewind()
+        if not self.instrument_id:
+            return
+        try:
+            await self._send(self.state_frame())
+            await self._send(bars_to_proto(self.instrument_id, self.bar_step, self.range_bars(), True))
+            empty = pd.DataFrame(columns=["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"])
+            await self._send(trades_to_proto(self.instrument_id, empty))
+        except Exception:
+            pass
+
     async def prepare(self, instrument_id: str, start_ns: int, end_ns: int, speed: float, bar_step: str) -> str:
         if self.playing:
             return "noop"

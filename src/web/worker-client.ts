@@ -51,13 +51,18 @@ export function createWorkerClient(): { api: WorkerApi; worker: Worker } {
   const api: WorkerApi = {
     connect: (url) => call("connect", [url]),
     disconnect: () => call("disconnect", []),
-    importCsv: (path, instrumentId = "") => call("importCsv", [path, instrumentId ?? ""]),
+    importCsv: (request) => call("importCsv", [request]),
     listCatalog: () => call("listCatalog", []),
+    listFiles: () => call("listFiles", []),
+    removeFile: (fileId) => call("removeFile", [fileId]),
+    moveFile: (fileId, provider, dataset, granularity, period) =>
+      call("moveFile", [fileId, provider, dataset, granularity, period]),
     queryBars: (instrumentId, barStep, startNs = "0", endNs = "0") =>
       call("queryBars", [instrumentId, barStep, startNs ?? "0", endNs ?? "0"]),
     play: (instrumentId, barStep, speed, startNs = "0", endNs = "0") =>
       call("play", [instrumentId, barStep, speed, startNs ?? "0", endNs ?? "0"]),
     pause: () => call("pause", []),
+    resetPlayback: () => call("resetPlayback", []),
     setSpeed: (speed) => call("setSpeed", [speed]),
   };
 

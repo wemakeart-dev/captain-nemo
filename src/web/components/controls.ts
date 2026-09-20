@@ -1,16 +1,19 @@
 import { define, html } from "hybrids";
+import { refreshLibrary } from "../library/select.ts";
 import { engineApi } from "../session.ts";
 import {
   chartStore,
+  hasSelectedFile,
   resolvePlayArgs,
   setBarStep,
-  setCatalog,
   setConnected,
   setInstrument,
   setSpeed,
   setStatus,
   subscribe,
 } from "../store.ts";
+import { openImportModal, type ImportModalHost } from "./import-modal.ts";
+import "./import-modal.ts";
 
 type ControlsHost = HTMLElement & {
   url: string;
@@ -34,8 +37,7 @@ async function connectEngine(host: ControlsHost) {
     const hello = await engineApi.connect(host.url);
     setConnected(true);
     setStatus(`Engine v${hello.version}`);
-    const items = await engineApi.listCatalog();
-    setCatalog(items);
+    await refreshLibrary(engineApi);
   } catch (error) {
     setConnected(false);
     setStatus(error instanceof Error ? error.message : String(error));
@@ -44,45 +46,18 @@ async function connectEngine(host: ControlsHost) {
   }
 }
 
-async function importCsv(host: ControlsHost) {
-  if (!engineApi) {
-    return;
-  }
+function openImport(host: ControlsHost) {
   const csvInput = host.shadowRoot?.querySelector("[data-field=csv]") as HTMLInputElement | null;
   const path = (csvInput?.value || host.csvPath).trim();
   host.csvPath = path;
-  if (!path) {
-    setStatus("CSV path is required");
-    return;
-  }
-  try {
-    setStatus("Importing CSV…");
-    const result = await engineApi.importCsv(path);
-    setStatus(`Imported ${result.tradeCount} trades`);
-    setInstrument(result.instrumentId);
-    const items = await engineApi.listCatalog();
-    setCatalog(items);
-    await engineApi.queryBars(result.instrumentId, chartStore.barStep);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function loadBars() {
-  if (!engineApi || !chartStore.instrumentId) {
-    return;
-  }
-  try {
-    setStatus("Loading bars…");
-    const result = await engineApi.queryBars(chartStore.instrumentId, chartStore.barStep);
-    setStatus(`Loaded ${result.barCount} bars`);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error));
+  const modal = host.shadowRoot?.querySelector("nemo-import-modal") as ImportModalHost | null;
+  if (modal) {
+    openImportModal(modal, path);
   }
 }
 
 async function play() {
-  if (!engineApi || !chartStore.instrumentId) {
+  if (!engineApi || !hasSelectedFile()) {
     return;
   }
   if (chartStore.playback?.playing) {
@@ -90,7 +65,7 @@ async function play() {
   }
   try {
     const args = resolvePlayArgs(chartStore);
-    await engineApi.play(chartStore.instrumentId, chartStore.barStep, args.speed, args.startNs);
+    await engineApi.play(chartStore.instrumentId, chartStore.barStep, args.speed, args.startNs, args.endNs);
     setStatus("Playing");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -110,6 +85,18 @@ async function pause() {
   }
 }
 
+async function stopPlayback() {
+  if (!engineApi) {
+    return;
+  }
+  try {
+    await engineApi.resetPlayback();
+    setStatus("Stopped");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function bindControls(host: ControlsHost) {
   const root = host.shadowRoot;
   if (!root) {
@@ -124,13 +111,7 @@ function bindControls(host: ControlsHost) {
   const importBtn = root.querySelector("[data-action=import]") as HTMLButtonElement | null;
   if (importBtn) {
     importBtn.onclick = () => {
-      void importCsv(host);
-    };
-  }
-  const loadBtn = root.querySelector("[data-action=load]") as HTMLButtonElement | null;
-  if (loadBtn) {
-    loadBtn.onclick = () => {
-      void loadBars();
+      openImport(host);
     };
   }
   const playBtn = root.querySelector("[data-action=play]") as HTMLButtonElement | null;
@@ -143,6 +124,12 @@ function bindControls(host: ControlsHost) {
   if (pauseBtn) {
     pauseBtn.onclick = () => {
       void pause();
+    };
+  }
+  const stopBtn = root.querySelector("[data-action=stop]") as HTMLButtonElement | null;
+  if (stopBtn) {
+    stopBtn.onclick = () => {
+      void stopPlayback();
     };
   }
   const urlInput = root.querySelector("[data-field=url]") as HTMLInputElement | null;
@@ -178,6 +165,14 @@ function bindControls(host: ControlsHost) {
         void engineApi.setSpeed(speed);
       }
     };
+  }
+  const modal = root.querySelector("nemo-import-modal");
+  if (modal && !(modal as HTMLElement).dataset.bound) {
+    (modal as HTMLElement).dataset.bound = "true";
+    modal.addEventListener("imported", (event) => {
+      const path = (event as CustomEvent<{ path: string }>).detail.path;
+      host.csvPath = path;
+    });
   }
 }
 
@@ -216,9 +211,9 @@ export const NemoControls = define({
             )}
           </select>
         </label>
-        <button type="button" data-action="load" disabled="${!chartStore.connected}">Load chart</button>
-        <button type="button" data-action="play" disabled="${!chartStore.connected}">Play</button>
-        <button type="button" data-action="pause" disabled="${!chartStore.connected}">Pause</button>
+        <button type="button" data-action="play" disabled="${!chartStore.connected || !hasSelectedFile()}">Play</button>
+        <button type="button" data-action="pause" disabled="${!chartStore.connected || !hasSelectedFile()}">Pause</button>
+        <button type="button" data-action="stop" disabled="${!chartStore.connected || !hasSelectedFile()}">Stop</button>
         <label>
           Speed
           <select data-field="speed">
@@ -228,12 +223,23 @@ export const NemoControls = define({
           </select>
         </label>
       </form>
+      <nemo-import-modal></nemo-import-modal>
     `.css`
+      :host {
+        display: block;
+        min-width: 0;
+        max-width: 100%;
+      }
       form {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 0.75rem 1rem;
         align-items: end;
+        width: 100%;
+        min-width: 0;
+      }
+      form > :not(.wide) {
+        flex: none;
       }
       label {
         display: flex;
@@ -244,7 +250,15 @@ export const NemoControls = define({
         text-transform: uppercase;
         letter-spacing: 0.06em;
       }
-      .wide { flex: 1; min-width: 18rem; }
+      .wide {
+        flex: 1 1 0%;
+        min-width: 0;
+      }
+      .wide input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
       input, select, button {
         font: inherit;
         color: #e8eef5;

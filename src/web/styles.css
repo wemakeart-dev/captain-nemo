@@ -7,7 +7,8 @@
 html,
 body {
   margin: 0;
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(circle at top, #12324a 0%, transparent 42%),
     #071018;

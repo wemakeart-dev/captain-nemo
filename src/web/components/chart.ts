@@ -23,17 +23,28 @@ echarts.use([
 type ChartHost = HTMLElement & {
   chart?: echarts.ECharts;
   onResize?: () => void;
+  resizeObserver?: ResizeObserver;
 };
 
 function paint(host: ChartHost) {
   const el = host.shadowRoot?.querySelector(".plot") as HTMLDivElement | null;
-  if (!el) {
+  if (!el || el.clientWidth < 1 || el.clientHeight < 1) {
     return;
   }
   if (!host.chart) {
     host.chart = echarts.init(el, undefined, { renderer: "canvas" });
-    host.onResize = () => host.chart?.resize();
+    host.onResize = () => {
+      if (!host.chart) {
+        paint(host);
+        return;
+      }
+      host.chart.resize();
+    };
     window.addEventListener("resize", host.onResize);
+    if (typeof ResizeObserver !== "undefined") {
+      host.resizeObserver = new ResizeObserver(() => host.onResize?.());
+      host.resizeObserver.observe(el);
+    }
   }
   const cursor = chartStore.playback ? Number(chartStore.playback.cursorNs / 1_000_000n) : null;
   host.chart.setOption(buildChartOption(chartStore.candles, cursor), { replaceMerge: ["series"] });
@@ -47,11 +58,15 @@ export const NemoChart = define({
         display: block;
         width: 100%;
         height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
       }
       .plot {
         width: 100%;
         height: 100%;
-        min-height: 480px;
+        min-width: 0;
+        min-height: 0;
       }
     `,
     connect: (host: ChartHost, _key, invalidate) => {
@@ -59,6 +74,7 @@ export const NemoChart = define({
       return () => {
         unsubscribe();
         window.removeEventListener("resize", host.onResize ?? (() => undefined));
+        host.resizeObserver?.disconnect();
         host.chart?.dispose();
         host.chart = undefined;
       };
