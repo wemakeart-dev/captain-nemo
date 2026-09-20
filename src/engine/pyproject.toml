@@ -8,6 +8,7 @@ dependencies = [
     "pandas",
     "protobuf",
     "pyarrow",
+    "rich>=13",
     "websockets>=14",
 ]
 

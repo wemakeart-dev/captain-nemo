@@ -1,6 +1,6 @@
 # Engine
 
-The engine is a uv-managed Python package at `src/engine`. It wraps Nautilus Trader (`nautilus-trader` >=1.221,<2, currently 1.231.0 wheels) for catalog ingest and serves a localhost protobuf WebSocket. Visualization playback uses an asyncio clock, not `BacktestEngine.run()`.
+The engine is a uv-managed Python package at `src/engine`. It wraps Nautilus Trader (`nautilus-trader` >=1.221,<2, currently 1.231.0 wheels) for catalog ingest and serves a localhost protobuf WebSocket. Visualization playback uses an asyncio clock, not `BacktestEngine.run()`. Runtime deps include `rich` for the process console.
 
 ## Process
 
@@ -8,6 +8,8 @@ The engine is a uv-managed Python package at `src/engine`. It wraps Nautilus Tra
 uv sync --project src/engine
 uv run --directory src/engine python -m captain_nemo_engine
 ```
+
+Ctrl+C (SIGINT) stops the server and closes WebSocket sessions without a `KeyboardInterrupt` traceback. Playback tasks are cancelled as connections drop.
 
 Environment:
 
@@ -18,6 +20,19 @@ Environment:
 | `NEMO_CATALOG` | `<repo>/data/catalog` |
 
 The socket is local-only. `data/` is gitignored.
+
+## Console
+
+On start the process prints a Rich banner to **stderr** (engine version, `ws://host:port`, catalog path, Nautilus version, Python version, Ctrl+C hint). After that it prints timestamped event lines as they happen:
+
+| Color | When |
+| --- | --- |
+| Green | Listening, client connected, import/query/playback succeeded |
+| Orange | Unknown instrument, empty playback range, bad command |
+| Red | Import failure, internal dispatch errors |
+| Dim | Disconnect, list catalog, speed change, shutdown |
+
+Logs stay on the session/CLI boundary. The playback clock does **not** log bar deltas or trade-tape frames; Rich `Live` / `Status` / `Progress` are not used.
 
 ## Ingest
 
@@ -76,4 +91,5 @@ Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanosec
 - Bar aggregation
 - Catalog ingest (Nautilus wrangler + parquet)
 - WebSocket hello / import / query
+- Console banner, color markup, Ctrl+C / shutdown event
 - Protobuf round-trip vs golden bytes (`src/proto/testdata/golden_bar_batch.bin`)

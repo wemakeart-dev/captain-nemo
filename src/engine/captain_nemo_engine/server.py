@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import signal
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from websockets.asyncio.server import ServerConnection
 from websockets.asyncio.server import serve as ws_serve
 
 from captain_nemo_engine.bars import resample_bars
 from captain_nemo_engine.catalog_index import load_index
+from captain_nemo_engine.console import log_error, log_info, log_success, log_warn
 from captain_nemo_engine.ingest import import_csv, load_minute_bars
 from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
 from captain_nemo_engine.playback import PlaybackController, bars_to_proto, filter_range, playback_state_frame
@@ -16,6 +20,55 @@ from captain_nemo_engine.wire import decode_frame, error_frame, hello_frame, new
 ensure_generated_path()
 
 from captain_nemo.v1 import wire_pb2 as wire
+
+_SHUTDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None))
+
+
+def _peer(connection: ServerConnection) -> str:
+    remote = getattr(connection, "remote_address", None)
+    if remote is None:
+        return "client"
+    if isinstance(remote, tuple) and len(remote) >= 2:
+        return f"{remote[0]}:{remote[1]}"
+    return str(remote)
+
+
+def _bound_endpoint(server: object, host: str, port: int) -> str:
+    sockets = getattr(server, "sockets", None) or ()
+    if sockets:
+        sockname = sockets[0].getsockname()
+        return f"{sockname[0]}:{sockname[1]}"
+    return f"{host}:{port}"
+
+
+def install_shutdown(loop: asyncio.AbstractEventLoop, shutdown: asyncio.Event) -> Callable[[], None]:
+    def request_stop(*_args: object) -> None:
+        loop.call_soon_threadsafe(shutdown.set)
+
+    names = [sig for sig in _SHUTDOWN_SIGNALS if sig is not None]
+    try:
+        for sig in names:
+            loop.add_signal_handler(sig, request_stop)
+
+        def restore() -> None:
+            for sig in names:
+                loop.remove_signal_handler(sig)
+
+        return restore
+    except NotImplementedError:
+        previous: dict[int, Any] = {}
+        for sig in names:
+            try:
+                previous[sig] = signal.getsignal(sig)
+                signal.signal(sig, request_stop)
+            except (OSError, RuntimeError, ValueError):
+                previous.pop(sig, None)
+
+        def restore() -> None:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+        return restore
 
 
 class EngineSession:
@@ -28,6 +81,8 @@ class EngineSession:
         await self.connection.send(payload)
 
     async def handle(self) -> None:
+        peer = _peer(self.connection)
+        log_success(f"client connected {peer}")
         await self.send(hello_frame())
         try:
             async for message in self.connection:
@@ -36,14 +91,17 @@ class EngineSession:
                     frame = decode_frame(payload)
                     await self._dispatch(frame)
                 except Exception as exc:
+                    log_error(f"internal error: {exc}")
                     await self.send(error_frame(0, "INTERNAL", str(exc)))
         finally:
             await self.playback.stop()
+            log_info(f"client disconnected {peer}")
 
     async def _dispatch(self, frame: wire.SocketFrame) -> None:
         cid = frame.correlation_id
         kind = frame.WhichOneof("kind")
         if kind != "command":
+            log_warn("expected command frame")
             await self.send(error_frame(cid, "BAD_COMMAND", "expected command frame"))
             return
         command = frame.command
@@ -58,6 +116,7 @@ class EngineSession:
             await self._start_playback(cid, command.start_playback)
         elif body == "stop_playback":
             await self.playback.stop()
+            log_info("playback stopped")
             result = new_frame(cid)
             result.result.playback.playing = False
             result.result.playback.speed = self.playback.speed
@@ -65,22 +124,28 @@ class EngineSession:
         elif body == "set_speed":
             speed = command.set_speed.speed
             self.playback.speed = speed if speed > 0 else 1.0
+            log_info(f"speed set to {self.playback.speed:g}x")
             result = new_frame(cid)
             result.result.playback.playing = self.playback.playing
             result.result.playback.speed = self.playback.speed
             await self.send(result.SerializeToString())
         else:
+            log_warn("unknown command")
             await self.send(error_frame(cid, "BAD_COMMAND", "unknown command"))
 
     async def _import_csv(self, cid: int, payload: wire.ImportCsv) -> None:
+        log_info(f"import started {payload.path}")
         try:
             item = import_csv(Path(payload.path), self.catalog_root, payload.instrument_id)
         except FileNotFoundError:
+            log_error(f"import failed: path not found {payload.path}")
             await self.send(error_frame(cid, "INVALID_PATH", payload.path))
             return
         except Exception as exc:
+            log_error(f"import failed: {exc}")
             await self.send(error_frame(cid, "IMPORT_FAILED", str(exc)))
             return
+        log_success(f"imported {item['instrument_id']} ({item['trade_count']} trades)")
         result = new_frame(cid)
         body = result.result.import_csv
         body.instrument_id = item["instrument_id"]
@@ -91,6 +156,8 @@ class EngineSession:
 
     async def _list_catalog(self, cid: int) -> None:
         payload = load_index(self.catalog_root)
+        count = len(payload.get("instruments", []))
+        log_info(f"list catalog ({count} instruments)")
         result = new_frame(cid)
         listing = result.result.list_catalog
         for item in payload.get("instruments", []):
@@ -106,9 +173,11 @@ class EngineSession:
         step = payload.bar_step or "1m"
         minute = load_minute_bars(self.catalog_root, payload.instrument_id)
         if minute.empty:
+            log_warn(f"unknown instrument {payload.instrument_id}")
             await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", payload.instrument_id))
             return
         bars = resample_bars(filter_range(minute, payload.start_ns, payload.end_ns), step)
+        log_success(f"query bars {payload.instrument_id} {step} ({len(bars)} bars)")
         result = new_frame(cid)
         result.result.query_bars.bar_count = len(bars)
         await self.send(result.SerializeToString())
@@ -119,10 +188,12 @@ class EngineSession:
         step = payload.bar_step or "1m"
         minute = load_minute_bars(self.catalog_root, payload.instrument_id)
         if minute.empty:
+            log_warn(f"unknown instrument {payload.instrument_id}")
             await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", payload.instrument_id))
             return
         bars = resample_bars(filter_range(minute, payload.start_ns, payload.end_ns), step)
         if bars.empty:
+            log_warn(f"empty playback range {payload.instrument_id}")
             await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", "no bars in range"))
             return
         start_value = int(bars.index[0].value)
@@ -142,6 +213,7 @@ class EngineSession:
                 end_value,
             )
         )
+        log_success(f"playback started {payload.instrument_id} {step} {speed:g}x")
         await self.playback.start(
             payload.instrument_id,
             payload.start_ns,
@@ -151,13 +223,29 @@ class EngineSession:
         )
 
 
-async def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, catalog: str | Path = DEFAULT_CATALOG) -> None:
+async def serve(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    catalog: str | Path = DEFAULT_CATALOG,
+    shutdown: asyncio.Event | None = None,
+) -> None:
     catalog_root = Path(catalog)
     catalog_root.mkdir(parents=True, exist_ok=True)
+    stop = shutdown or asyncio.Event()
+    restore = install_shutdown(asyncio.get_running_loop(), stop)
 
     async def handler(connection: ServerConnection) -> None:
         session = EngineSession(catalog_root, connection)
         await session.handle()
 
-    async with ws_serve(handler, host, port, max_size=2**23):
-        await asyncio.Future()
+    try:
+        async with ws_serve(handler, host, port, max_size=2**23) as server:
+            log_success(f"listening on ws://{_bound_endpoint(server, host, port)}")
+            try:
+                await stop.wait()
+            except asyncio.CancelledError:
+                stop.set()
+                raise
+            log_info("stopped")
+    finally:
+        restore()

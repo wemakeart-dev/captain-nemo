@@ -36,7 +36,7 @@ Wire types are generated from [`src/proto`](src/proto). Start at the [documentat
 ## Stack
 
 - **Yarn 4** for JavaScript/TypeScript (Vite, Hybrids, ECharts, Vitest, Buf, protobuf-es)
-- **uv** for Python (Nautilus Trader wheel, pytest, protobuf, websockets)
+- **uv** for Python (Nautilus Trader wheel, pytest, protobuf, websockets, Rich)
 - Protobuf as the single source of truth between engine, worker, and web
 - WebSocket binary frames on localhost
 
