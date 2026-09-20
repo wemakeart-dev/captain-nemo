@@ -31,6 +31,15 @@ def _empty_stored() -> pd.DataFrame:
     return pd.DataFrame(columns=STORED_COLUMNS)
 
 
+def _datetime_index_to_ns(index: pd.Index) -> pd.Series:
+    dt = pd.DatetimeIndex(index)
+    if dt.tz is None:
+        dt = dt.tz_localize("UTC")
+    else:
+        dt = dt.tz_convert("UTC")
+    return pd.Series(dt.as_unit("ns").astype("int64"), index=index)
+
+
 def _stored_from_chunks(trades: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -39,7 +48,7 @@ def _stored_from_chunks(trades: pd.DataFrame) -> pd.DataFrame:
             "quantity": trades["quantity"].astype(str),
             "quote_qty": trades["quote_qty"].astype(str),
             "buyer_maker": trades["buyer_maker"].astype(bool),
-            "ts_event_ns": trades.index.astype("int64"),
+            "ts_event_ns": _datetime_index_to_ns(trades.index),
         }
     )
 
@@ -103,7 +112,7 @@ def import_csv(path: Path, catalog_root: Path, instrument_id: str = "", chunksiz
     stored = _merge_stored(load_trades(catalog_root, resolved_id), incoming)
     _write_new_ticks(catalog, resolved_id, ticks)
     bars_source = stored.copy()
-    bars_source.index = pd.to_datetime(bars_source["ts_event_ns"], utc=True)
+    bars_source.index = pd.to_datetime(bars_source["ts_event_ns"], utc=True, unit="ns")
     minute_bars = aggregate_bars(bars_source, "1m")
     _bars_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
     _trades_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
