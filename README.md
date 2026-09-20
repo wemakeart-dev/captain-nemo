@@ -27,7 +27,7 @@ v1 runs on **Windows 10 x64** only. The engine binds `127.0.0.1`. There is no cl
 | Worker | [`src/worker`](src/worker) | Browser Web Worker: WebSocket owner, conflation, transferable protobuf frames |
 | Engine | [`src/engine`](src/engine) | Python / Nautilus ingest, Parquet catalog, paced playback, protobuf WebSocket |
 
-Wire types are generated from [`src/proto`](src/proto). See:
+Wire types are generated from [`src/proto`](src/proto). Start at the [documentation index](__docs/README.md) to pick a layer:
 
 - [Web application](__docs/WEB.md)
 - [Worker layer](__docs/WORKER.md)

@@ -30,7 +30,11 @@ Examples:
 
 Columns: `id, price, qty, quote_qty, time, is_buyer_maker`
 
-`time` is Unix milliseconds UTC. Official extracts may be headerless; the loader accepts both.
+`time` is Unix milliseconds UTC. The loader parses that column with `unit="ms"`. Stored trades and the wire use `ts_event_ns` as UTC **nanoseconds**. Bar aggregation reconstructs the index with `pd.to_datetime(..., utc=True, unit="ns")`. Do not cast a millisecond-resolution DatetimeIndex with `.astype("int64")`; pandas 3 keeps `datetime64[ms]` and that yields ~1e12 values, which the chart then plots near 1970.
+
+Official extracts may be headerless; the loader accepts both.
+
+Catalogs written before the ns conversion must be **re-imported**. Old `nemo_bars` / `nemo_trades` parquet will show epoch dates on the chart.
 
 Flow:
 
