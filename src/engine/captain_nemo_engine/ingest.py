@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from nautilus_trader.model.data import TradeTick
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 
@@ -13,6 +14,7 @@ from captain_nemo_engine.instruments import perpetual_from_trades
 
 BARS_DIRNAME = "nemo_bars"
 TRADES_DIRNAME = "nemo_trades"
+STORED_COLUMNS = ["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"]
 
 
 def _bars_path(catalog_root: Path, instrument_id: str) -> Path:
@@ -25,7 +27,51 @@ def _trades_path(catalog_root: Path, instrument_id: str) -> Path:
     return catalog_root / TRADES_DIRNAME / f"{safe}.parquet"
 
 
-def import_csv(path: Path, catalog_root: Path, instrument_id: str = "") -> dict:
+def _empty_stored() -> pd.DataFrame:
+    return pd.DataFrame(columns=STORED_COLUMNS)
+
+
+def _stored_from_chunks(trades: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_id": trades["trade_id"].astype(str),
+            "price": trades["price"].astype(str),
+            "quantity": trades["quantity"].astype(str),
+            "quote_qty": trades["quote_qty"].astype(str),
+            "buyer_maker": trades["buyer_maker"].astype(bool),
+            "ts_event_ns": trades.index.astype("int64"),
+        }
+    )
+
+
+def _merge_stored(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+    if incoming.empty:
+        return existing.reset_index(drop=True) if not existing.empty else _empty_stored()
+    if existing.empty:
+        combined = incoming
+    else:
+        combined = pd.concat([existing, incoming], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["trade_id"], keep="last")
+    return combined.sort_values("ts_event_ns").reset_index(drop=True)
+
+
+def _last_catalog_ts_ns(catalog: ParquetDataCatalog, instrument_id: str) -> int | None:
+    last = catalog.query_last_timestamp(TradeTick, instrument_id)
+    if last is None:
+        return None
+    return int(pd.Timestamp(last).value)
+
+
+def _write_new_ticks(catalog: ParquetDataCatalog, instrument_id: str, ticks: list) -> None:
+    if not ticks:
+        return
+    last_ns = _last_catalog_ts_ns(catalog, instrument_id)
+    to_write = ticks if last_ns is None else [tick for tick in ticks if int(tick.ts_init) > last_ns]
+    if to_write:
+        catalog.write_data(to_write)
+
+
+def import_csv(path: Path, catalog_root: Path, instrument_id: str = "", chunksize: int = 100_000) -> dict:
     path = path.resolve()
     if not path.is_file():
         raise FileNotFoundError(str(path))
@@ -36,11 +82,8 @@ def import_csv(path: Path, catalog_root: Path, instrument_id: str = "") -> dict:
     wrangler: TradeTickDataWrangler | None = None
     instrument_written = False
     trade_frames: list[pd.DataFrame] = []
-    bar_frames: list[pd.DataFrame] = []
-    trade_count = 0
-    start_ns: int | None = None
-    end_ns: int | None = None
-    for chunk in iter_trade_chunks(path):
+    ticks: list = []
+    for chunk in iter_trade_chunks(path, chunksize=chunksize):
         if chunk.empty:
             continue
         if wrangler is None:
@@ -52,53 +95,26 @@ def import_csv(path: Path, catalog_root: Path, instrument_id: str = "") -> dict:
         wrangle = chunk.copy()
         wrangle["price"] = wrangle["price"].astype("float64")
         wrangle["quantity"] = wrangle["quantity"].astype("float64")
-        ticks = wrangler.process(wrangle)
-        if ticks:
-            catalog.write_data(ticks)
+        ticks.extend(wrangler.process(wrangle))
         trade_frames.append(chunk)
-        bar_frames.append(aggregate_bars(chunk, "1m"))
-        trade_count += len(chunk)
-        first_ns = int(chunk.index[0].value)
-        last_ns = int(chunk.index[-1].value)
-        start_ns = first_ns if start_ns is None else min(start_ns, first_ns)
-        end_ns = last_ns if end_ns is None else max(end_ns, last_ns)
-    if not instrument_written or start_ns is None or end_ns is None:
+    if not instrument_written or not trade_frames:
         raise ValueError("no trades found in csv")
-    trades = pd.concat(trade_frames, axis=0).sort_index()
-    minute_bars = pd.concat(bar_frames, axis=0)
-    if not minute_bars.empty:
-        minute_bars = (
-            minute_bars.groupby(level=0).agg(
-                {
-                    "open": "first",
-                    "high": "max",
-                    "low": "min",
-                    "close": "last",
-                    "volume": "sum",
-                    "trade_count": "sum",
-                }
-            )
-        )
+    incoming = _stored_from_chunks(pd.concat(trade_frames, axis=0).sort_index())
+    stored = _merge_stored(load_trades(catalog_root, resolved_id), incoming)
+    _write_new_ticks(catalog, resolved_id, ticks)
+    bars_source = stored.copy()
+    bars_source.index = pd.to_datetime(bars_source["ts_event_ns"], utc=True)
+    minute_bars = aggregate_bars(bars_source, "1m")
     _bars_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
     _trades_path(catalog_root, resolved_id).parent.mkdir(parents=True, exist_ok=True)
     minute_bars.to_parquet(_bars_path(catalog_root, resolved_id))
-    stored = pd.DataFrame(
-        {
-            "trade_id": trades["trade_id"].astype(str),
-            "price": trades["price"].astype(str),
-            "quantity": trades["quantity"].astype(str),
-            "quote_qty": trades["quote_qty"].astype(str),
-            "buyer_maker": trades["buyer_maker"].astype(bool),
-            "ts_event_ns": trades.index.astype("int64"),
-        }
-    )
     stored.to_parquet(_trades_path(catalog_root, resolved_id), index=False)
     item = {
         "instrument_id": resolved_id,
         "symbol": symbol,
-        "start_ns": start_ns,
-        "end_ns": end_ns,
-        "trade_count": trade_count,
+        "start_ns": int(stored["ts_event_ns"].min()),
+        "end_ns": int(stored["ts_event_ns"].max()),
+        "trade_count": int(len(stored)),
         "source_path": str(path),
     }
     upsert_instrument(catalog_root, item)
@@ -115,5 +131,5 @@ def load_minute_bars(catalog_root: Path, instrument_id: str) -> pd.DataFrame:
 def load_trades(catalog_root: Path, instrument_id: str) -> pd.DataFrame:
     path = _trades_path(catalog_root, instrument_id)
     if not path.exists():
-        return pd.DataFrame(columns=["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"])
+        return _empty_stored()
     return pd.read_parquet(path)

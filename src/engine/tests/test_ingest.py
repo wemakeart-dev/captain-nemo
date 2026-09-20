@@ -20,6 +20,34 @@ def test_import_csv_writes_catalog_bars_and_trades(tmp_path: Path) -> None:
     assert (tmp_path / "nemo-index.json").exists()
 
 
+def test_import_merges_adjacent_files_and_chunked_writes(tmp_path: Path) -> None:
+    first = import_csv(FIXTURE, tmp_path, chunksize=5)
+    assert first["trade_count"] == 25
+    follow = tmp_path / "BTCUSDC-trades-2026-08-01b.csv"
+    follow.write_text(
+        "\n".join(
+            [
+                "id,price,qty,quote_qty,time,is_buyer_maker",
+                "25,62833.2,0.022,1382.330,1785543600000,true",
+                "26,62840.0,0.010,628.400,1785543660000,false",
+                "27,62841.5,0.015,942.623,1785543720000,true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    second = import_csv(follow, tmp_path)
+    trades = load_trades(tmp_path, second["instrument_id"])
+    assert second["trade_count"] == 27
+    assert len(trades) == 27
+    assert second["start_ns"] == first["start_ns"]
+    assert second["end_ns"] > first["end_ns"]
+    bars = load_minute_bars(tmp_path, second["instrument_id"])
+    assert not bars.empty
+    again = import_csv(FIXTURE, tmp_path, chunksize=8)
+    assert again["trade_count"] == 27
+
+
 def test_strategy_stream_seam_serializes_reserved_events() -> None:
     seam = StrategyStreamSeam()
     fill = seam.fill_event(
