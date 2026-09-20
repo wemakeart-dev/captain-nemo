@@ -19,6 +19,8 @@ Environment:
 | `NEMO_PORT` | `8765` |
 | `NEMO_CATALOG` | `<repo>/data/catalog` |
 
+Vision downloads extract under `<repo>/data/tmp/binance-vision` (gitignored with `data/`).
+
 The socket is local-only. `data/` is gitignored.
 
 ## Console
@@ -30,7 +32,7 @@ On start the process prints a Rich banner to **stderr** (engine version, `ws://h
 | Green | Listening, client connected, import/query/playback succeeded, file removed |
 | Orange | Unknown instrument, empty playback range, bad command, unknown file |
 | Red | Import failure, internal dispatch errors, playback task failures (`PLAYBACK_FAILED`) |
-| Dim | Disconnect, list catalog/files, speed change, playback pause/reset, move, shutdown |
+| Dim | Disconnect, list catalog/files, speed change, playback pause/reset, move, Vision download, shutdown |
 
 Logs stay on the session/CLI boundary. The playback clock does **not** log bar deltas or trade-tape frames; Rich `Live` / `Status` / `Progress` are not used.
 
@@ -44,7 +46,7 @@ SQLite is not used for candles or trades. Those stay Parquet (`nemo_bars/`, `nem
 
 `ListCatalog` is `GROUP BY instrument_id` over this table. Existing catalogs without library rows stay playable only after re-import (same bar as the ns-conversion note below).
 
-Taxonomy is virtual. CSV files stay on disk; **Move** only updates SQLite columns. **Remove** deletes the SQLite row and that `file_id` from Parquet, rebuilds `nemo_bars` / `nemo_trades`, and rolls up the instrument. It does not delete the user’s CSV.
+Taxonomy is virtual. CSV files stay on disk; **Move** only updates SQLite columns. **Remove** deletes the SQLite row and that `file_id` from Parquet, rebuilds `nemo_bars` / `nemo_trades`, and rolls up the instrument. It does not delete the user’s CSV or a Vision extract under `data/tmp`.
 
 ## Playback
 
@@ -62,7 +64,7 @@ Visualization uses an asyncio clock, not `BacktestEngine.run()`. `PlaybackContro
 
 ## Ingest
 
-Supported files: Binance Vision **futures / um / daily or monthly / trades**. Other Futures values are UI-visible and rejected with `IMPORT_FAILED`.
+Supported files: Binance Vision **futures / um / daily or monthly / trades**. Other Futures values are UI-visible and rejected with `IMPORT_FAILED`. The same rule applies to Vision **trading type**: only `um` is ingested in v1. Dataset modules for aggTrades, klines, and futures index/mark/premium klines live in `captain_nemo_engine.vision` for later use.
 
 Examples:
 
@@ -77,7 +79,7 @@ Official extracts may be headerless; the loader accepts both.
 
 Catalogs written before the ns conversion must be **re-imported**. Old `nemo_bars` / `nemo_trades` parquet will show epoch dates on the chart.
 
-Flow:
+Flow (local CSV):
 
 1. Chunked pandas read (`csv_loader.py`)
 2. `CryptoPerpetual` for `{SYMBOL}-PERP.BINANCE`
@@ -85,6 +87,8 @@ Flow:
 4. Merge 1-minute OHLCV parquet for the UI (`nemo_bars/`)
 5. Merge slim trades parquet for the playback tape (`nemo_trades/`), keyed by `trade_id`, tagged with `file_id` so remove can subtract one file
 6. Upsert `nemo-library.sqlite` and roll up `ListCatalog` from the `files` table
+
+Flow (Binance Vision): `ImportVision` builds `https://data.binance.vision/data/futures/um/{monthly|daily}/trades/{SYMBOL}/...zip` on the engine (the UI URL is preview-only). The zip streams into `data/tmp/binance-vision` with SHA-256 `.CHECKSUM` verify, the CSV is extracted (zip-slip rejected), then the local CSV flow runs. `source_path` is the extracted file. Re-import of the same archive skips a matching zip. Tests must not hit the live CDN.
 
 Consecutive daily files still merge into one instrument Parquet. Each file keeps its own library row and `file_id` on stored trades.
 
@@ -94,7 +98,8 @@ Each WebSocket connection gets `SessionHello`, then `SocketFrame` commands:
 
 | Command | Effect |
 | --- | --- |
-| `ImportCsv` | Ingest path on disk with provider / dataset / granularity / period; returns `file_id` |
+| `ImportCsv` | Ingest path on disk with provider / dataset / granularity / period; returns `file_id` and `path` |
+| `ImportVision` | Download one um trades zip from data.binance.vision, extract, ingest; same result as `ImportCsv` |
 | `ListCatalog` | Instrument rollup from SQLite |
 | `ListFiles` | Flat file-manager rows |
 | `RemoveFile` | Drop SQLite row + that `file_id` from Parquet; rebuild bars |
@@ -122,8 +127,9 @@ Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanosec
 - Headered and headerless CSV
 - Bar aggregation
 - Catalog ingest (Nautilus wrangler + parquet) and `file_id` tagging
+- Binance Vision URL/path lockstep, mocked download/checksum/extract, um-trades-only `import_vision`
 - Library CRUD, unique path, period display/key, catalog rollup, merge then remove, move-is-metadata
-- WebSocket hello / import / query / list-remove-move; reject disabled datasets
+- WebSocket hello / import / query / list-remove-move / ImportVision; reject disabled datasets
 - Playback clock (virtual time): 60x pacing, pause/resume cursor, Stop rewind then Play from start, restart at end, speed rebase, trade window, `PLAYBACK_FAILED`
 - WebSocket play → pause → play keeps the cursor; play → reset → play restarts at range start
 - Console banner, color markup, Ctrl+C / shutdown event

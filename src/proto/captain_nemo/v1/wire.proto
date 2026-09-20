@@ -30,6 +30,7 @@ message Command {
     RemoveFile remove_file = 8;
     MoveFile move_file = 9;
     ResetPlayback reset_playback = 10;
+    ImportVision import_vision = 11;
   }
 }
 
@@ -40,6 +41,15 @@ message ImportCsv {
   string dataset = 4;
   string granularity = 5;
   string period = 6;
+}
+
+message ImportVision {
+  string symbol = 1;
+  string trading_type = 2;
+  string dataset = 3;
+  string granularity = 4;
+  string period = 5;
+  string provider = 6;
 }
 
 message ListCatalog {}
@@ -99,6 +109,7 @@ message ImportCsvResult {
   int64 start_ns = 3;
   int64 end_ns = 4;
   string file_id = 5;
+  string path = 6;
 }
 
 message CatalogItem {

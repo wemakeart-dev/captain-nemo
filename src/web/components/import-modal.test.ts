@@ -39,4 +39,32 @@ describe("nemo-import-modal", () => {
     const importBtn = el.shadowRoot?.querySelector("[data-action=import]") as HTMLButtonElement;
     expect(importBtn.disabled).toBe(false);
   });
+
+  it("toggles to Binance Vision and requires a symbol before Import is enabled", async () => {
+    const el = document.createElement("nemo-import-modal") as HTMLElement & {
+      source: string;
+      symbol: string;
+      periodValue: string;
+    };
+    document.body.append(el);
+    await Promise.resolve();
+    el.source = "vision";
+    el.periodValue = "2026-08";
+    await Promise.resolve();
+    const root = el.shadowRoot;
+    expect(root?.querySelector("[data-field=path]")).toBeNull();
+    expect(root?.querySelector("[data-field=symbol]")).toBeTruthy();
+    expect(root?.querySelector("[data-field=vision-url]")).toBeTruthy();
+    const market = [...(root?.querySelectorAll("[data-field=trading-type] option") ?? [])] as HTMLOptionElement[];
+    expect(market.map((option) => option.value)).toEqual(["spot", "um", "cm"]);
+    expect(market.filter((option) => option.value !== "um").every((option) => option.disabled)).toBe(true);
+    const importBtn = root?.querySelector("[data-action=import]") as HTMLButtonElement;
+    expect(importBtn.disabled).toBe(true);
+    el.symbol = "BTCUSDC";
+    await Promise.resolve();
+    expect((root?.querySelector("[data-action=import]") as HTMLButtonElement).disabled).toBe(false);
+    expect((root?.querySelector("[data-field=vision-url]") as HTMLInputElement).value).toContain(
+      "data/futures/um/monthly/trades/BTCUSDC/BTCUSDC-trades-2026-08.zip",
+    );
+  });
 });
