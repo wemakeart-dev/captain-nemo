@@ -13,6 +13,8 @@ def test_headered_sample_parses_trade_columns() -> None:
     assert str(frame.iloc[0]["price"]) == "62806.8"
     assert bool(frame.iloc[0]["buyer_maker"]) is True
     assert bool(frame.iloc[1]["buyer_maker"]) is False
+    assert int(frame.index[0].value) == 1_785_542_400_000_000_000
+    assert frame.index[0].year == 2026
 
 
 def test_headerless_sample_parses_the_same_rows(tmp_path: Path) -> None:

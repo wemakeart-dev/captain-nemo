@@ -8,7 +8,7 @@ The web layer is a Vite app rooted at `src/web`. It is a HybridsJS custom-elemen
 - Receive conflated protobuf `ArrayBuffer` frames on a dedicated `postMessage` channel (`{ nemo: "frame", buffer }`)
 - Decode frames with generated protobuf-es types immediately before updating the chart store
 - Render aggregated OHLCV candlesticks with Apache ECharts (`large`, `progressive`, time `dataZoom`)
-- Send CSV import as a local filesystem path string, never as file bytes
+- Send CSV import as a local filesystem path string, never as file bytes. A native `<input type="file">` is deferred: the browser cannot pass a real disk path to the engine.
 
 ## Layout
 

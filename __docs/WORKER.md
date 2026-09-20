@@ -22,7 +22,7 @@ Command RPC uses a small `postMessage` protocol (`{ nemo: "rpc" }`). Market data
 `src/worker/index.ts` handles RPC methods:
 
 - `connect` / `disconnect`
-- `importCsv`
+- `importCsv` (filesystem path string; not file bytes)
 - `listCatalog`
 - `queryBars`
 - `play` / `pause` / `setSpeed`

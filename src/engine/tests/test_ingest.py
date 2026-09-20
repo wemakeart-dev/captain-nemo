@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pandas as pd
+
 from captain_nemo_engine.actor import StrategyStreamSeam
 from captain_nemo_engine.ingest import import_csv, load_minute_bars, load_trades
 from captain_nemo_engine.paths import ensure_generated_path
@@ -17,6 +19,10 @@ def test_import_csv_writes_catalog_bars_and_trades(tmp_path: Path) -> None:
     trades = load_trades(tmp_path, item["instrument_id"])
     assert not bars.empty
     assert len(trades) == 25
+    assert item["start_ns"] == 1_785_542_400_000_000_000
+    assert int(trades["ts_event_ns"].iloc[0]) == 1_785_542_400_000_000_000
+    assert int(pd.Timestamp(bars.index[0]).value) == 1_785_542_400_000_000_000
+    assert int(pd.Timestamp(bars.index[0]).year) == 2026
     assert (tmp_path / "nemo-index.json").exists()
 
 

@@ -33,6 +33,7 @@ async def test_session_hello_import_and_query(tmp_path: Path) -> None:
             imported = decode_frame(await client.recv())
             assert imported.WhichOneof("kind") == "result"
             assert imported.result.import_csv.trade_count == 25
+            assert imported.result.import_csv.start_ns == 1_785_542_400_000_000_000
 
             listing = new_frame(2)
             listing.command.list_catalog.SetInParent()
@@ -50,6 +51,7 @@ async def test_session_hello_import_and_query(tmp_path: Path) -> None:
             assert bars.WhichOneof("kind") == "bars"
             assert bars.bars.snapshot is True
             assert len(bars.bars.bars) == ack.result.query_bars.bar_count
+            assert bars.bars.bars[0].ts_event_ns == 1_785_542_400_000_000_000
 
             play = new_frame(4)
             play.command.start_playback.instrument_id = "BTCUSDC-PERP.BINANCE"
