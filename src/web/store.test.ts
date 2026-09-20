@@ -1,16 +1,30 @@
+import { create, toBinary } from "@bufbuild/protobuf";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyFrameBuffer, chartStore, setStatus } from "./store.ts";
+import { PlaybackStateSchema, SocketFrameSchema } from "@proto/captain_nemo/v1/wire_pb.ts";
+import { applyFrameBuffer, chartStore, resolvePlayArgs, setStatus } from "./store.ts";
+import type { PlaybackState } from "@proto/captain_nemo/v1/wire_pb.ts";
 
 const golden = resolve(dirname(fileURLToPath(import.meta.url)), "../proto/testdata/golden_bar_batch.bin");
+
+function frameBuffer(frame: ReturnType<typeof create<typeof SocketFrameSchema>>): ArrayBuffer {
+  const bytes = toBinary(SocketFrameSchema, frame);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function playbackState(fields: Partial<PlaybackState>): PlaybackState {
+  return create(PlaybackStateSchema, fields);
+}
 
 describe("chart store frames", () => {
   afterEach(() => {
     chartStore.candles = [];
+    chartStore.trades = [];
     chartStore.playback = null;
     chartStore.instrumentId = "";
+    chartStore.speed = 1;
     setStatus("Disconnected");
   });
 
@@ -21,5 +35,94 @@ describe("chart store frames", () => {
     expect(chartStore.candles[0]?.[1]).toBe(62806.8);
     expect(chartStore.candles[0]?.[2]).toBe(62808.2);
     expect(chartStore.instrumentId).toBe("BTCUSDC-PERP.BINANCE");
+  });
+
+  it("applies playback state cursor, playing, and speed", () => {
+    applyFrameBuffer(
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "playback",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              cursorNs: 1785542460000000000n,
+              speed: 60,
+              playing: true,
+              startNs: 1785542400000000000n,
+              endNs: 1785543600000000000n,
+            },
+          },
+        }),
+      ),
+    );
+    expect(chartStore.playback?.playing).toBe(true);
+    expect(chartStore.playback?.cursorNs).toBe(1785542460000000000n);
+    expect(chartStore.speed).toBe(60);
+  });
+
+  it("keeps the last 200 trades from a trade batch", () => {
+    applyFrameBuffer(
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "trades",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              trades: Array.from({ length: 205 }, (_, index) => ({
+                id: BigInt(index + 1),
+                price: "1",
+                qty: "1",
+                quoteQty: "1",
+                tsEventNs: 1785542400000000000n + BigInt(index),
+                isBuyerMaker: false,
+              })),
+            },
+          },
+        }),
+      ),
+    );
+    expect(chartStore.trades).toHaveLength(200);
+    expect(chartStore.trades[0]?.id).toBe(6n);
+    expect(chartStore.trades[199]?.id).toBe(205n);
+  });
+});
+
+describe("resolvePlayArgs", () => {
+  afterEach(() => {
+    chartStore.playback = null;
+    chartStore.instrumentId = "";
+    chartStore.speed = 1;
+  });
+
+  it("resumes from the paused cursor", () => {
+    chartStore.instrumentId = "BTCUSDC-PERP.BINANCE";
+    chartStore.speed = 60;
+    chartStore.playback = playbackState({
+      instrumentId: "BTCUSDC-PERP.BINANCE",
+      cursorNs: 1785542460000000000n,
+      speed: 60,
+      playing: false,
+      startNs: 1785542400000000000n,
+      endNs: 1785543600000000000n,
+    });
+    expect(resolvePlayArgs(chartStore)).toEqual({
+      speed: 60,
+      startNs: "1785542460000000000",
+    });
+  });
+
+  it("restarts from the beginning at end of range or when idle", () => {
+    chartStore.instrumentId = "BTCUSDC-PERP.BINANCE";
+    chartStore.speed = 60;
+    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0" });
+    chartStore.playback = playbackState({
+      instrumentId: "BTCUSDC-PERP.BINANCE",
+      cursorNs: 1785543600000000000n,
+      speed: 60,
+      playing: false,
+      startNs: 1785542400000000000n,
+      endNs: 1785543600000000000n,
+    });
+    expect(resolvePlayArgs(chartStore)).toEqual({ speed: 60, startNs: "0" });
   });
 });

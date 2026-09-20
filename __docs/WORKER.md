@@ -54,4 +54,4 @@ The UI listens for `{ nemo: "frame", buffer, byteLength, kind }` and `{ nemo: "r
 
 ## Tests
 
-`yarn test:worker` covers conflation, transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es).
+`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es).

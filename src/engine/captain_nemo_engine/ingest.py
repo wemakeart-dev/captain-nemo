@@ -17,14 +17,22 @@ TRADES_DIRNAME = "nemo_trades"
 STORED_COLUMNS = ["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"]
 
 
-def _bars_path(catalog_root: Path, instrument_id: str) -> Path:
+def bars_parquet_path(catalog_root: Path, instrument_id: str) -> Path:
     safe = instrument_id.replace("/", "-")
     return catalog_root / BARS_DIRNAME / f"{safe}.parquet"
 
 
-def _trades_path(catalog_root: Path, instrument_id: str) -> Path:
+def trades_parquet_path(catalog_root: Path, instrument_id: str) -> Path:
     safe = instrument_id.replace("/", "-")
     return catalog_root / TRADES_DIRNAME / f"{safe}.parquet"
+
+
+def _bars_path(catalog_root: Path, instrument_id: str) -> Path:
+    return bars_parquet_path(catalog_root, instrument_id)
+
+
+def _trades_path(catalog_root: Path, instrument_id: str) -> Path:
+    return trades_parquet_path(catalog_root, instrument_id)
 
 
 def _empty_stored() -> pd.DataFrame:
