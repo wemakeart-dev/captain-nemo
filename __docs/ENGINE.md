@@ -36,10 +36,10 @@ Flow:
 
 1. Chunked pandas read (`csv_loader.py`)
 2. `CryptoPerpetual` for `{SYMBOL}-PERP.BINANCE`
-3. `TradeTickDataWrangler.process` → `ParquetDataCatalog.write_data`
-4. Materialize 1-minute OHLCV parquet for the UI (`nemo_bars/`)
-5. Store a slim trades parquet for the playback tape (`nemo_trades/`)
-6. Update `nemo-index.json` for `ListCatalog`
+3. `TradeTickDataWrangler.process` → one `ParquetDataCatalog.write_data` per import (ticks after the last catalog timestamp only, so consecutive daily files stay disjoint)
+4. Merge 1-minute OHLCV parquet for the UI (`nemo_bars/`)
+5. Merge slim trades parquet for the playback tape (`nemo_trades/`), keyed by `trade_id`
+6. Update `nemo-index.json` for `ListCatalog` with the combined range and count
 
 ## Serve
 
