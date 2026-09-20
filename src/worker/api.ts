@@ -31,12 +31,22 @@ export type ImportCsvRequest = {
   period?: string;
 };
 
+export type ImportVisionRequest = {
+  symbol: string;
+  tradingType?: string;
+  dataset?: string;
+  granularity?: string;
+  period?: string;
+  provider?: string;
+};
+
 export type ImportResult = {
   instrumentId: string;
   tradeCount: string;
   startNs: string;
   endNs: string;
   fileId: string;
+  path: string;
 };
 
 export type QueryBarsResult = {
@@ -52,6 +62,7 @@ export type WorkerApi = {
   connect(url: string): Promise<{ version: string }>;
   disconnect(): Promise<void>;
   importCsv(request: ImportCsvRequest): Promise<ImportResult>;
+  importVision(request: ImportVisionRequest): Promise<ImportResult>;
   listCatalog(): Promise<CatalogItem[]>;
   listFiles(): Promise<FileEntry[]>;
   removeFile(fileId: string): Promise<{ fileId: string }>;

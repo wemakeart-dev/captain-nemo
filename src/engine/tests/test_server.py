@@ -7,7 +7,10 @@ from websockets.asyncio.server import serve as ws_serve
 
 from captain_nemo_engine.paths import ensure_generated_path
 from captain_nemo_engine.server import EngineSession
+from captain_nemo_engine.vision.trades import spec as trade_spec
 from captain_nemo_engine.wire import decode_frame, new_frame
+
+from vision_fakes import FakeOpener, FIXTURE, vision_files
 
 ensure_generated_path()
 
@@ -269,3 +272,52 @@ async def test_playback_reset_then_play_restarts_at_range_start(tmp_path: Path) 
             restart_states = [frame.playback for frame in restarted if frame.WhichOneof("kind") == "playback"]
             assert restart_states
             assert restart_states[0].cursor_ns == RANGE_START_NS
+
+
+@pytest.mark.asyncio
+async def test_import_vision_downloads_and_rejects_disabled_dataset(tmp_path: Path) -> None:
+    item = trade_spec("um", "BTCUSDC", "monthly", "08-2026")
+    opener = FakeOpener(vision_files(item, "BTCUSDC-trades-2026-08.csv", FIXTURE.read_bytes()))
+
+    async def handler(connection):
+        session = EngineSession(
+            tmp_path,
+            connection,
+            download_root=tmp_path / "downloads",
+            vision_opener=opener,
+        )
+        await session.handle()
+
+    async with ws_serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with connect(f"ws://127.0.0.1:{port}") as client:
+            hello = decode_frame(await client.recv())
+            assert hello.WhichOneof("kind") == "hello"
+
+            bad = new_frame(1)
+            bad.command.import_vision.symbol = "BTCUSDC"
+            bad.command.import_vision.trading_type = "um"
+            bad.command.import_vision.dataset = "klines"
+            bad.command.import_vision.granularity = "monthly"
+            bad.command.import_vision.period = "08-2026"
+            bad.command.import_vision.provider = "Binance"
+            await client.send(bad.SerializeToString())
+            rejected = decode_frame(await client.recv())
+            assert rejected.WhichOneof("kind") == "error"
+            assert rejected.error.code == "IMPORT_FAILED"
+            assert item.download_url not in opener.calls
+
+            command = new_frame(2)
+            command.command.import_vision.symbol = "BTCUSDC"
+            command.command.import_vision.trading_type = "um"
+            command.command.import_vision.dataset = "trades"
+            command.command.import_vision.granularity = "monthly"
+            command.command.import_vision.period = "08-2026"
+            command.command.import_vision.provider = "Binance"
+            await client.send(command.SerializeToString())
+            imported = decode_frame(await client.recv())
+            assert imported.WhichOneof("kind") == "result"
+            assert imported.result.import_csv.trade_count == 25
+            assert imported.result.import_csv.file_id
+            assert imported.result.import_csv.path
+            assert imported.result.import_csv.path.endswith("BTCUSDC-trades-2026-08.csv")

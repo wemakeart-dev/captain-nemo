@@ -52,6 +52,7 @@ export function createWorkerClient(): { api: WorkerApi; worker: Worker } {
     connect: (url) => call("connect", [url]),
     disconnect: () => call("disconnect", []),
     importCsv: (request) => call("importCsv", [request]),
+    importVision: (request) => call("importVision", [request]),
     listCatalog: () => call("listCatalog", []),
     listFiles: () => call("listFiles", []),
     removeFile: (fileId) => call("removeFile", [fileId]),

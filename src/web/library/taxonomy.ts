@@ -12,12 +12,17 @@ export const FUTURES_DATASETS = [
 
 export type Granularity = "daily" | "monthly";
 
+export type ImportSource = "path" | "vision";
+
 export type TaxonomyDraft = {
   path: string;
   provider: string;
   dataset: string;
   granularity: string;
   period: string;
+  source?: ImportSource;
+  symbol?: string;
+  tradingType?: string;
 };
 
 export function monthToDisplay(isoMonth: string): string {
@@ -76,6 +81,20 @@ export function importReady(draft: TaxonomyDraft): boolean {
   if (!draft.path.trim()) {
     return false;
   }
+  return taxonomyReady(draft);
+}
+
+export function visionImportReady(draft: TaxonomyDraft): boolean {
+  if (!(draft.symbol ?? "").trim()) {
+    return false;
+  }
+  if ((draft.tradingType || "um") !== "um") {
+    return false;
+  }
+  return taxonomyReady(draft);
+}
+
+function taxonomyReady(draft: TaxonomyDraft): boolean {
   if (draft.provider !== "Binance") {
     return false;
   }

@@ -106,10 +106,22 @@ describe("protobuf contract", () => {
       },
     });
     const reset = encodeCommand(7, { case: "resetPlayback", value: {} });
+    const vision = encodeCommand(8, {
+      case: "importVision",
+      value: {
+        symbol: "BTCUSDC",
+        tradingType: "um",
+        dataset: "trades",
+        granularity: "monthly",
+        period: "08-2026",
+        provider: "Binance",
+      },
+    });
     expect(decodeFrame(listed).kind.value.body.case).toBe("listFiles");
     expect(decodeFrame(removed).kind.value.body.case).toBe("removeFile");
     expect(decodeFrame(moved).kind.value.body.case).toBe("moveFile");
     expect(decodeFrame(reset).kind.value.body.case).toBe("resetPlayback");
+    expect(decodeFrame(vision).kind.value.body.case).toBe("importVision");
   });
 });
 

@@ -4,13 +4,22 @@ import pandas as pd
 import pytest
 
 from captain_nemo_engine.actor import StrategyStreamSeam
-from captain_nemo_engine.ingest import import_csv, load_minute_bars, load_trades, remove_imported_file, trades_parquet_path
+from captain_nemo_engine.ingest import (
+    import_csv,
+    import_vision,
+    load_minute_bars,
+    load_trades,
+    remove_imported_file,
+    trades_parquet_path,
+)
 from captain_nemo_engine.library import LibraryError, list_files, move_file
 from captain_nemo_engine.paths import ensure_generated_path
+from captain_nemo_engine.vision.http import DownloadError
+from captain_nemo_engine.vision.trades import spec as trade_spec
+
+from vision_fakes import FakeOpener, FIXTURE, vision_files
 
 ensure_generated_path()
-
-FIXTURE = Path(__file__).parent / "fixtures" / "BTCUSDC-trades-sample.csv"
 
 
 def test_import_csv_writes_catalog_bars_and_trades(tmp_path: Path) -> None:
@@ -117,3 +126,80 @@ def test_strategy_stream_seam_serializes_reserved_events() -> None:
     assert fill.fill.order_id == "O-1"
     payload = fill.SerializeToString()
     assert payload
+
+
+def _boom(url: str) -> None:
+    raise AssertionError(url)
+
+
+def test_import_vision_writes_library_from_extracted_csv(tmp_path: Path) -> None:
+    item = trade_spec("um", "BTCUSDC", "monthly", "08-2026")
+    opener = FakeOpener(vision_files(item, "BTCUSDC-trades-2026-08.csv", FIXTURE.read_bytes()))
+    imported = import_vision(
+        tmp_path,
+        symbol="BTCUSDC",
+        trading_type="um",
+        dataset="trades",
+        granularity="monthly",
+        period="08-2026",
+        download_root=tmp_path / "downloads",
+        opener=opener,
+    )
+    assert imported["instrument_id"] == "BTCUSDC-PERP.BINANCE"
+    assert imported["trade_count"] == 25
+    assert imported["period"] == "08-2026"
+    assert Path(imported["path"]).is_file()
+    assert Path(imported["path"]).name == "BTCUSDC-trades-2026-08.csv"
+    assert load_trades(tmp_path, imported["instrument_id"]).shape[0] == 25
+
+
+def test_import_vision_rejects_disabled_datasets_before_http(tmp_path: Path) -> None:
+    with pytest.raises(LibraryError) as exc:
+        import_vision(
+            tmp_path,
+            symbol="BTCUSDC",
+            trading_type="um",
+            dataset="klines",
+            granularity="monthly",
+            period="08-2026",
+            download_root=tmp_path,
+            opener=_boom,
+        )
+    assert exc.value.code == "IMPORT_FAILED"
+    with pytest.raises(LibraryError):
+        import_vision(
+            tmp_path,
+            symbol="BTCUSDC",
+            trading_type="cm",
+            dataset="trades",
+            granularity="monthly",
+            period="08-2026",
+            download_root=tmp_path,
+            opener=_boom,
+        )
+    with pytest.raises(LibraryError):
+        import_vision(
+            tmp_path,
+            symbol="BTCUSDC",
+            trading_type="spot",
+            dataset="trades",
+            granularity="monthly",
+            period="08-2026",
+            download_root=tmp_path,
+            opener=_boom,
+        )
+
+
+def test_import_vision_maps_missing_file_to_download_failed(tmp_path: Path) -> None:
+    with pytest.raises(DownloadError) as exc:
+        import_vision(
+            tmp_path,
+            symbol="BTCUSDC",
+            trading_type="um",
+            dataset="trades",
+            granularity="monthly",
+            period="08-2026",
+            download_root=tmp_path / "downloads",
+            opener=FakeOpener({}),
+        )
+    assert exc.value.code == "DOWNLOAD_FAILED"

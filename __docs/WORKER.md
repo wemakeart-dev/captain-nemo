@@ -23,6 +23,7 @@ Command RPC uses a small `postMessage` protocol (`{ nemo: "rpc" }`). Market data
 
 - `connect` / `disconnect`
 - `importCsv` (request object: filesystem path plus provider / dataset / granularity / period; not file bytes)
+- `importVision` (symbol, trading type, dataset, granularity, period, provider; engine builds the Vision URL)
 - `listCatalog`
 - `listFiles` / `removeFile` / `moveFile`
 - `queryBars`
@@ -55,4 +56,4 @@ The UI listens for `{ nemo: "frame", buffer, byteLength, kind }` and `{ nemo: "r
 
 ## Tests
 
-`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es), including library / reset commands encoded without empty oneofs.
+`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es), including library / reset / `importVision` commands encoded without empty oneofs.

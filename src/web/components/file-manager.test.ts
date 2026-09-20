@@ -30,6 +30,7 @@ function mockEngine(overrides: Partial<WorkerApi> = {}): WorkerApi {
     connect: vi.fn(),
     disconnect: vi.fn(),
     importCsv: vi.fn(),
+    importVision: vi.fn(),
     listCatalog: vi.fn().mockResolvedValue([]),
     listFiles: vi.fn().mockResolvedValue([]),
     removeFile: vi.fn().mockResolvedValue({ fileId: sample.fileId }),

@@ -4,6 +4,7 @@ import type {
   FileEntry,
   ImportCsvRequest,
   ImportResult,
+  ImportVisionRequest,
   PlaybackAck,
   QueryBarsResult,
   RpcRequest,
@@ -102,6 +103,36 @@ const api: WorkerApi = {
       startNs: bigintToString(body.startNs),
       endNs: bigintToString(body.endNs),
       fileId: body.fileId,
+      path: body.path,
+    };
+    return result;
+  },
+
+  async importVision(request: ImportVisionRequest) {
+    const frame = assertResult(
+      await socket.request({
+        case: "importVision",
+        value: {
+          symbol: request.symbol,
+          tradingType: request.tradingType ?? "um",
+          dataset: request.dataset ?? "trades",
+          granularity: request.granularity ?? "",
+          period: request.period ?? "",
+          provider: request.provider ?? "Binance",
+        },
+      }),
+    );
+    if (frame.kind.case !== "result" || frame.kind.value.body.case !== "importCsv") {
+      throw new Error("unexpected import result");
+    }
+    const body = frame.kind.value.body.value;
+    const result: ImportResult = {
+      instrumentId: body.instrumentId,
+      tradeCount: bigintToString(body.tradeCount),
+      startNs: bigintToString(body.startNs),
+      endNs: bigintToString(body.endNs),
+      fileId: body.fileId,
+      path: body.path,
     };
     return result;
   },

@@ -11,9 +11,11 @@ from websockets.asyncio.server import serve as ws_serve
 
 from captain_nemo_engine.bars import resample_bars
 from captain_nemo_engine.console import log_error, log_info, log_success, log_warn
-from captain_nemo_engine.ingest import import_csv, load_minute_bars, remove_imported_file
+from captain_nemo_engine.ingest import import_csv, import_vision, load_minute_bars, remove_imported_file
 from captain_nemo_engine.library import LibraryError, list_files, list_instruments, move_file
-from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
+from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_DOWNLOADS, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
+from captain_nemo_engine.vision.http import Opener
+from captain_nemo_engine.vision.spec import VisionError
 from captain_nemo_engine.playback import PlaybackController, PlaybackError, bars_to_proto, filter_range
 from captain_nemo_engine.wire import decode_frame, error_frame, hello_frame, new_frame
 
@@ -22,6 +24,18 @@ ensure_generated_path()
 from captain_nemo.v1 import wire_pb2 as wire
 
 _SHUTDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None))
+
+
+def _import_result(cid: int, item: dict[str, Any]) -> bytes:
+    result = new_frame(cid)
+    body = result.result.import_csv
+    body.instrument_id = item["instrument_id"]
+    body.trade_count = int(item["trade_count"])
+    body.start_ns = int(item["start_ns"])
+    body.end_ns = int(item["end_ns"])
+    body.file_id = item["file_id"]
+    body.path = item.get("path") or item.get("source_path", "")
+    return result.SerializeToString()
 
 
 def _fill_file_entry(entry: wire.FileEntry, item: dict[str, Any]) -> None:
@@ -95,9 +109,17 @@ def install_shutdown(loop: asyncio.AbstractEventLoop, shutdown: asyncio.Event) -
 
 
 class EngineSession:
-    def __init__(self, catalog_root: Path, connection: ServerConnection) -> None:
+    def __init__(
+        self,
+        catalog_root: Path,
+        connection: ServerConnection,
+        download_root: Path | None = None,
+        vision_opener: Opener | None = None,
+    ) -> None:
         self.catalog_root = catalog_root
         self.connection = connection
+        self.download_root = Path(download_root) if download_root is not None else DEFAULT_DOWNLOADS
+        self.vision_opener = vision_opener
         self.playback = PlaybackController(catalog_root, self.send)
 
     async def send(self, payload: bytes) -> None:
@@ -131,6 +153,8 @@ class EngineSession:
         body = command.WhichOneof("body")
         if body == "import_csv":
             await self._import_csv(cid, command.import_csv)
+        elif body == "import_vision":
+            await self._import_vision(cid, command.import_vision)
         elif body == "list_catalog":
             await self._list_catalog(cid)
         elif body == "list_files":
@@ -188,14 +212,33 @@ class EngineSession:
             await self.send(error_frame(cid, "IMPORT_FAILED", str(exc)))
             return
         log_success(f"imported {item['instrument_id']} ({item['trade_count']} trades)")
-        result = new_frame(cid)
-        body = result.result.import_csv
-        body.instrument_id = item["instrument_id"]
-        body.trade_count = int(item["trade_count"])
-        body.start_ns = int(item["start_ns"])
-        body.end_ns = int(item["end_ns"])
-        body.file_id = item["file_id"]
-        await self.send(result.SerializeToString())
+        await self.send(_import_result(cid, item))
+
+    async def _import_vision(self, cid: int, payload: wire.ImportVision) -> None:
+        log_info(f"vision import started {payload.trading_type} {payload.dataset} {payload.symbol} {payload.period}")
+        try:
+            item = await asyncio.to_thread(
+                import_vision,
+                self.catalog_root,
+                symbol=payload.symbol,
+                trading_type=payload.trading_type,
+                dataset=payload.dataset,
+                granularity=payload.granularity,
+                period=payload.period,
+                provider=payload.provider,
+                download_root=self.download_root,
+                opener=self.vision_opener,
+            )
+        except (LibraryError, VisionError) as exc:
+            log_error(f"import failed: {exc.message}")
+            await self.send(error_frame(cid, exc.code, exc.message))
+            return
+        except Exception as exc:
+            log_error(f"import failed: {exc}")
+            await self.send(error_frame(cid, "IMPORT_FAILED", str(exc)))
+            return
+        log_success(f"imported {item['instrument_id']} ({item['trade_count']} trades)")
+        await self.send(_import_result(cid, item))
 
     async def _list_catalog(self, cid: int) -> None:
         items = await asyncio.to_thread(list_instruments, self.catalog_root)

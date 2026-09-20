@@ -10,6 +10,7 @@ from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 from captain_nemo_engine.bars import aggregate_bars
 from captain_nemo_engine.csv_loader import instrument_id_from_symbol, iter_trade_chunks, symbol_from_path
 from captain_nemo_engine.instruments import perpetual_from_trades
+from captain_nemo_engine.console import log_info
 from captain_nemo_engine.library import (
     LibraryError,
     canonical_dataset,
@@ -22,6 +23,10 @@ from captain_nemo_engine.library import (
     resolve_taxonomy,
     upsert_file,
 )
+from captain_nemo_engine.paths import DEFAULT_DOWNLOADS, ensure_downloads
+from captain_nemo_engine.vision.http import Opener
+from captain_nemo_engine.vision.spec import VisionError
+from captain_nemo_engine.vision import trades as vision_trades
 
 BARS_DIRNAME = "nemo_bars"
 TRADES_DIRNAME = "nemo_trades"
@@ -224,7 +229,47 @@ def import_csv(
         "trade_count": int(len(stored)),
         "file_trade_count": int(len(incoming)),
         "source_path": str(path),
+        "path": str(path),
     }
+
+
+def import_vision(
+    catalog_root: Path,
+    *,
+    symbol: str,
+    trading_type: str = "um",
+    dataset: str = "trades",
+    granularity: str = "",
+    period: str = "",
+    provider: str = "Binance",
+    download_root: Path | None = None,
+    opener: Opener | None = None,
+    checksum: bool = True,
+) -> dict:
+    trading = (trading_type or "um").strip().lower() or "um"
+    data = (dataset or "trades").strip() or "trades"
+    if trading != "um":
+        raise LibraryError("IMPORT_FAILED", f"unsupported trading type: {trading_type}")
+    if data.lower() != "trades":
+        raise LibraryError("IMPORT_FAILED", f"unsupported dataset: {dataset}")
+    if provider:
+        canonical_provider(provider)
+    try:
+        spec = vision_trades.spec(trading, symbol, granularity, period)
+    except VisionError as exc:
+        raise LibraryError(exc.code, exc.message) from exc
+    dest_root = ensure_downloads(download_root or DEFAULT_DOWNLOADS)
+    log_info(f"download {spec.download_url}")
+    csv_path = vision_trades.download(spec, dest_root, checksum=checksum, opener=opener)
+    log_info(f"extracted {csv_path}")
+    return import_csv(
+        csv_path,
+        catalog_root,
+        provider=provider,
+        dataset="trades",
+        granularity=granularity,
+        period=period,
+    )
 
 
 def remove_imported_file(catalog_root: Path, file_id: str) -> dict:

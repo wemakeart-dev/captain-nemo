@@ -8,7 +8,7 @@ The web layer is a Vite app rooted at `src/web`. It is a HybridsJS custom-elemen
 - Receive conflated protobuf `ArrayBuffer` frames on a dedicated `postMessage` channel (`{ nemo: "frame", buffer }`)
 - Decode frames with generated protobuf-es types immediately before updating the chart store
 - Render aggregated OHLCV candlesticks with Apache ECharts (`large`, `progressive`, time `dataZoom`)
-- Send CSV import as a local filesystem path string, never as file bytes. A native `<input type="file">` is deferred: the browser cannot pass a real disk path to the engine.
+- Send CSV import as a local filesystem path string, never as file bytes. A native `<input type="file">` is deferred: the browser cannot pass a real disk path to the engine. Binance Vision import sends symbol / market / taxonomy fields; the engine downloads the zip.
 
 ## Layout
 
@@ -29,7 +29,7 @@ The shell (`html`/`body`/`nemo-app`) is locked to the viewport (`height: 100%`, 
 | `src/web/main.ts` | Boots the worker client and registers `<nemo-app>` |
 | `src/web/components/app.ts` | Shell |
 | `src/web/components/controls.ts` | Engine URL, CSV path, catalog, Play / Pause / Stop |
-| `src/web/components/import-modal.ts` | Import Data `<dialog>` (provider / futures / period) |
+| `src/web/components/import-modal.ts` | Import Data `<dialog>` (local CSV or Binance Vision) |
 | `src/web/components/workspace.ts` | File manager + chart grid |
 | `src/web/components/file-manager.ts` | Sidebar chrome, bottom action bar, move dialog |
 | `src/web/components/file-tree.ts` | Folder tree; file-name click sets `activeFileId` |
@@ -38,20 +38,31 @@ The shell (`html`/`body`/`nemo-app`) is locked to the viewport (`height: 100%`, 
 | `src/web/library/tree.ts` | Flat `FileEntry[]` → nested tree |
 | `src/web/library/actions.ts` | Enable Select Data / Remove / Move for the active file |
 | `src/web/library/taxonomy.ts` | Period formatting and import validation |
+| `src/web/library/vision.ts` | Binance Vision URL constructor (lockstep with the engine) |
 | `src/web/chart/options.ts` | Pure option builder used by tests |
 | `src/web/store.ts` | Candles, trades, files, `activeFileId`, `selectedFileId`, playback, `resolvePlayArgs` |
 | `src/web/worker-client.ts` | Worker + RPC + transferable frame listener |
 
 ## Import Data modal
 
-**Import** always opens the modal. Path handling:
+**Import** always opens the modal. The toolbar CSV path field is unchanged. The modal has a Local CSV / Binance Vision toggle.
+
+Local CSV:
 
 - If the toolbar CSV path is non-empty, the modal path is prefilled.
 - If it is empty, the user must enter it in the modal.
 - Modal Import stays disabled until path, provider, futures=`trades`, and a complete period are set.
-- Successful import writes the path back to the toolbar field, then `ListFiles` + `ListCatalog`.
 
-Fields: CSV path; Provider (`Binance` only); Futures (all Binance Vision names shown, only `trades` enabled); Time period Monthly vs Daily (`<input type="month">` / `type="date">`, stored/displayed as `MM-YYYY` / `DD-MM-YYYY`).
+Binance Vision:
+
+- Symbol is required. Market is `spot` / `um` / `cm` with only `um` enabled. Futures is still only `trades`.
+- A read-only URL is constructed from those fields (`https://data.binance.vision/data/futures/um/...`).
+- Import stays disabled until symbol, um, trades, and a complete period are set.
+- The engine downloads one zip for that period, extracts it under `data/tmp/binance-vision`, and ingests the CSV.
+
+Successful import writes the filesystem path (local or extracted) back to the toolbar field, then `ListFiles` + `ListCatalog`.
+
+Fields: source toggle; CSV path or symbol + market + URL; Provider (`Binance` only); Futures (all Binance Vision names shown, only `trades` enabled); Time period Monthly vs Daily (`<input type="month">` / `type="date">`, stored/displayed as `MM-YYYY` / `DD-MM-YYYY`).
 
 ## File manager
 
@@ -60,7 +71,7 @@ The tree is virtual taxonomy: `Binance` → `trades` → `daily|monthly` → per
 Check, cross, and arrow are **not** per-file. They sit once in a bottom bar, outside the directory tree, as `<text> <icon>`:
 
 - **Select Data** — sets `selectedFileId` and `queryBars` for that file’s `start_ns`/`end_ns` (this is what used to be **Load chart**).
-- **Remove** — `RemoveFile`. If that file was on the chart, selection and candles clear. The user’s CSV is not deleted.
+- **Remove** — `RemoveFile`. If that file was on the chart, selection and candles clear. The user’s CSV (and any Vision extract) is not deleted.
 - **Move** — pick an existing period folder or create a new branch with the same taxonomy controls.
 
 Click a file name to set `activeFileId` (row highlight). The three buttons stay disabled until then; they then apply to that file. A gold file name is the chart’s `selectedFileId`. Play / Pause / Stop stay disabled until a file is selected for the chart.
@@ -84,6 +95,7 @@ Controls call `engineApi` (`WorkerApi`):
 
 - `connect(url)` default `ws://127.0.0.1:8765`
 - `importCsv({ path, provider, dataset, granularity, period })`
+- `importVision({ symbol, tradingType, dataset, granularity, period, provider })`
 - `listCatalog()` / `listFiles()` / `removeFile` / `moveFile`
 - `queryBars(instrumentId, barStep, startNs, endNs)`
 - `play` / `pause` / `resetPlayback` / `setSpeed`
@@ -102,4 +114,4 @@ The worker TypeScript is bundled by Vite (`worker.format = "es"`). Regenerated p
 
 ## Tests
 
-`yarn test:web` runs Vitest + happy-dom against option builders, Hybrids status / file-manager / controls / modal rendering, viewport layout (CSV shrink, no 480px floor), golden `BarBatch` store application, `PlaybackState` / trade-tape updates, file-tree shape and folder collapse, global action-bar gating (click file name, then Select Data / Remove / Move), and `resolvePlayArgs` resume vs Stop restart.
+`yarn test:web` runs Vitest + happy-dom against option builders, Hybrids status / file-manager / controls / modal rendering, viewport layout (CSV shrink, no 480px floor), Vision URL construction, golden `BarBatch` store application, `PlaybackState` / trade-tape updates, file-tree shape and folder collapse, global action-bar gating (click file name, then Select Data / Remove / Move), and `resolvePlayArgs` resume vs Stop restart.

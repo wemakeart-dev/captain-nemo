@@ -5,6 +5,7 @@ import {
   importReady,
   monthToDisplay,
   periodFromInput,
+  visionImportReady,
 } from "./taxonomy.ts";
 
 describe("import taxonomy", () => {
@@ -54,5 +55,52 @@ describe("import taxonomy", () => {
     ).toBe(true);
     expect(FUTURES_DATASETS.filter((item) => item !== "trades")).not.toContain("trades");
     expect(FUTURES_DATASETS).toContain("trades");
+  });
+
+  it("requires symbol, um trades, and a complete period for Vision import", () => {
+    expect(
+      visionImportReady({
+        path: "",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "monthly",
+        period: "08-2026",
+        symbol: "",
+        tradingType: "um",
+      }),
+    ).toBe(false);
+    expect(
+      visionImportReady({
+        path: "",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "monthly",
+        period: "08-2026",
+        symbol: "BTCUSDC",
+        tradingType: "spot",
+      }),
+    ).toBe(false);
+    expect(
+      visionImportReady({
+        path: "",
+        provider: "Binance",
+        dataset: "klines",
+        granularity: "monthly",
+        period: "08-2026",
+        symbol: "BTCUSDC",
+        tradingType: "um",
+      }),
+    ).toBe(false);
+    expect(
+      visionImportReady({
+        path: "",
+        provider: "Binance",
+        dataset: "trades",
+        granularity: "monthly",
+        period: "08-2026",
+        symbol: "BTCUSDC",
+        tradingType: "um",
+      }),
+    ).toBe(true);
   });
 });
