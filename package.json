@@ -8,6 +8,7 @@
     "proto:watch": "chokidar \"src/proto/**/*.proto\" -c \"yarn proto:generate\"",
     "web:dev": "vite",
     "web:build": "vite build",
+    "engine:dev": "uv run --directory src/engine python -m captain_nemo_engine",
     "test:web": "vitest run --config vitest.web.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
     "test:engine": "uv run --directory src/engine pytest"
