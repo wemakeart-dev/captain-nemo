@@ -1,16 +1,18 @@
 import { define, html } from "hybrids";
-import { refreshLibrary } from "../library/select.ts";
+import { refreshLibrary, reloadSelectedFile } from "../library/select.ts";
 import { engineApi } from "../session.ts";
 import {
+  applyPlaybackAck,
   chartStore,
   hasSelectedFile,
   resolvePlayArgs,
   setBarStep,
   setConnected,
   setInstrument,
+  setPlaybackBusy,
   setSpeed,
   setStatus,
-  subscribe,
+  subscribeKeys,
 } from "../store.ts";
 import { openImportModal, type ImportModalHost } from "./import-modal.ts";
 import "./import-modal.ts";
@@ -22,6 +24,16 @@ type ControlsHost = HTMLElement & {
 
 let connecting = false;
 let autoStarted = false;
+
+const CONTROL_KEYS: (keyof typeof chartStore)[] = [
+  "connected",
+  "catalog",
+  "instrumentId",
+  "barStep",
+  "speed",
+  "selectedFileId",
+  "playbackBusy",
+];
 
 async function connectEngine(host: ControlsHost) {
   if (!engineApi) {
@@ -56,117 +68,101 @@ function openImport(host: ControlsHost) {
   }
 }
 
-async function play() {
+export async function play() {
   if (!engineApi || !hasSelectedFile()) {
     return;
   }
-  if (chartStore.playback?.playing) {
+  if (chartStore.playback?.playing || chartStore.playbackBusy) {
     return;
   }
+  setPlaybackBusy(true);
   try {
     const args = resolvePlayArgs(chartStore);
-    await engineApi.play(chartStore.instrumentId, chartStore.barStep, args.speed, args.startNs, args.endNs);
+    const ack = await engineApi.play(chartStore.instrumentId, chartStore.barStep, args.speed, args.startNs, args.endNs);
+    applyPlaybackAck(ack);
     setStatus("Playing");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(message.includes("PLAYBACK_FAILED") ? "Playback failed" : message);
+  } finally {
+    setPlaybackBusy(false);
   }
 }
 
-async function pause() {
-  if (!engineApi) {
+export async function pause() {
+  if (!engineApi || chartStore.playbackBusy) {
     return;
   }
+  setPlaybackBusy(true);
   try {
-    await engineApi.pause();
+    const ack = await engineApi.pause();
+    applyPlaybackAck(ack);
     setStatus("Paused");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error));
+  } finally {
+    setPlaybackBusy(false);
   }
 }
 
-async function stopPlayback() {
-  if (!engineApi) {
+export async function stopPlayback() {
+  if (!engineApi || chartStore.playbackBusy) {
     return;
   }
+  setPlaybackBusy(true);
   try {
-    await engineApi.resetPlayback();
+    const ack = await engineApi.resetPlayback();
+    applyPlaybackAck(ack);
     setStatus("Stopped");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error));
+  } finally {
+    setPlaybackBusy(false);
   }
 }
 
-function bindControls(host: ControlsHost) {
-  const root = host.shadowRoot;
-  if (!root) {
+function playbackDisabled(): boolean {
+  return !chartStore.connected || !hasSelectedFile() || chartStore.playbackBusy;
+}
+
+function onConnectClick(host: ControlsHost) {
+  void connectEngine(host);
+}
+
+function onUrlInput(host: ControlsHost, event: Event) {
+  host.url = (event.target as HTMLInputElement).value;
+}
+
+function onCsvInput(host: ControlsHost, event: Event) {
+  host.csvPath = (event.target as HTMLInputElement).value;
+}
+
+function onInstrumentChange(_host: ControlsHost, event: Event) {
+  setInstrument((event.target as HTMLSelectElement).value);
+}
+
+export async function changeBarStep(step: string): Promise<void> {
+  setBarStep(step);
+  if (!engineApi) {
     return;
   }
-  const connectBtn = root.querySelector("[data-action=connect]") as HTMLButtonElement | null;
-  if (connectBtn) {
-    connectBtn.onclick = () => {
-      void connectEngine(host);
-    };
+  await reloadSelectedFile(engineApi, step);
+}
+
+function onStepChange(_host: ControlsHost, event: Event) {
+  void changeBarStep((event.target as HTMLSelectElement).value);
+}
+
+function onSpeedChange(_host: ControlsHost, event: Event) {
+  const speed = Number((event.target as HTMLSelectElement).value);
+  setSpeed(speed);
+  if (engineApi) {
+    void engineApi.setSpeed(speed);
   }
-  const importBtn = root.querySelector("[data-action=import]") as HTMLButtonElement | null;
-  if (importBtn) {
-    importBtn.onclick = () => {
-      openImport(host);
-    };
-  }
-  const playBtn = root.querySelector("[data-action=play]") as HTMLButtonElement | null;
-  if (playBtn) {
-    playBtn.onclick = () => {
-      void play();
-    };
-  }
-  const pauseBtn = root.querySelector("[data-action=pause]") as HTMLButtonElement | null;
-  if (pauseBtn) {
-    pauseBtn.onclick = () => {
-      void pause();
-    };
-  }
-  const stopBtn = root.querySelector("[data-action=stop]") as HTMLButtonElement | null;
-  if (stopBtn) {
-    stopBtn.onclick = () => {
-      void stopPlayback();
-    };
-  }
-  const urlInput = root.querySelector("[data-field=url]") as HTMLInputElement | null;
-  if (urlInput) {
-    urlInput.oninput = () => {
-      host.url = urlInput.value;
-    };
-  }
-  const csvInput = root.querySelector("[data-field=csv]") as HTMLInputElement | null;
-  if (csvInput) {
-    csvInput.oninput = () => {
-      host.csvPath = csvInput.value;
-    };
-  }
-  const instrumentSelect = root.querySelector("[data-field=instrument]") as HTMLSelectElement | null;
-  if (instrumentSelect) {
-    instrumentSelect.onchange = () => {
-      setInstrument(instrumentSelect.value);
-    };
-  }
-  const stepSelect = root.querySelector("[data-field=step]") as HTMLSelectElement | null;
-  if (stepSelect) {
-    stepSelect.onchange = () => {
-      setBarStep(stepSelect.value);
-    };
-  }
-  const speedSelect = root.querySelector("[data-field=speed]") as HTMLSelectElement | null;
-  if (speedSelect) {
-    speedSelect.onchange = () => {
-      const speed = Number(speedSelect.value);
-      setSpeed(speed);
-      if (engineApi) {
-        void engineApi.setSpeed(speed);
-      }
-    };
-  }
-  const modal = root.querySelector("nemo-import-modal");
+}
+
+function bindImportModal(host: ControlsHost) {
+  const modal = host.shadowRoot?.querySelector("nemo-import-modal");
   if (modal && !(modal as HTMLElement).dataset.bound) {
     (modal as HTMLElement).dataset.bound = "true";
     modal.addEventListener("imported", (event) => {
@@ -185,17 +181,17 @@ export const NemoControls = define({
       <form>
         <label>
           Engine
-          <input data-field="url" value="${host.url}" />
+          <input data-field="url" value="${host.url}" oninput="${onUrlInput}" />
         </label>
-        <button type="button" data-action="connect">Connect</button>
+        <button type="button" data-action="connect" onclick="${onConnectClick}">Connect</button>
         <label class="wide">
           CSV path
-          <input data-field="csv" value="${host.csvPath}" placeholder="E:\\data\\BTCUSDC-trades-2026-08.csv" />
+          <input data-field="csv" value="${host.csvPath}" placeholder="E:\\data\\BTCUSDC-trades-2026-08.csv" oninput="${onCsvInput}" />
         </label>
-        <button type="button" data-action="import" disabled="${!chartStore.connected}">Import</button>
+        <button type="button" data-action="import" disabled="${!chartStore.connected}" onclick="${openImport}">Import</button>
         <label>
           Instrument
-          <select data-field="instrument">
+          <select data-field="instrument" onchange="${onInstrumentChange}">
             ${chartStore.catalog.map(
               (item) => html`<option value="${item.instrumentId}" selected="${item.instrumentId === chartStore.instrumentId}">
                 ${item.instrumentId}
@@ -205,18 +201,18 @@ export const NemoControls = define({
         </label>
         <label>
           Bar step
-          <select data-field="step">
+          <select data-field="step" onchange="${onStepChange}">
             ${["1m", "5m", "15m", "1h"].map(
               (step) => html`<option value="${step}" selected="${step === chartStore.barStep}">${step}</option>`,
             )}
           </select>
         </label>
-        <button type="button" data-action="play" disabled="${!chartStore.connected || !hasSelectedFile()}">Play</button>
-        <button type="button" data-action="pause" disabled="${!chartStore.connected || !hasSelectedFile()}">Pause</button>
-        <button type="button" data-action="stop" disabled="${!chartStore.connected || !hasSelectedFile()}">Stop</button>
+        <button type="button" data-action="play" disabled="${playbackDisabled()}" onclick="${play}">Play</button>
+        <button type="button" data-action="pause" disabled="${playbackDisabled()}" onclick="${pause}">Pause</button>
+        <button type="button" data-action="stop" disabled="${playbackDisabled()}" onclick="${stopPlayback}">Stop</button>
         <label>
           Speed
-          <select data-field="speed">
+          <select data-field="speed" onchange="${onSpeedChange}">
             ${[1, 2, 5, 10, 60].map(
               (speed) => html`<option value="${speed}" selected="${speed === chartStore.speed}">${speed}x</option>`,
             )}
@@ -276,13 +272,16 @@ export const NemoControls = define({
         cursor: not-allowed;
       }
     `,
-    connect: (_host: ControlsHost, _key, invalidate) => subscribe(invalidate),
-    observe: (host: ControlsHost) => {
-      bindControls(host);
+    connect: (host: ControlsHost, _key, invalidate) => {
+      const unsubscribe = subscribeKeys(CONTROL_KEYS, invalidate);
       if (!autoStarted) {
         autoStarted = true;
         void connectEngine(host);
       }
+      return unsubscribe;
+    },
+    observe: (host: ControlsHost) => {
+      bindImportModal(host);
     },
   },
 });

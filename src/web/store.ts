@@ -1,6 +1,8 @@
-import { decodeFrame } from "../worker/codec.ts";
-import type { FileEntry } from "../worker/api.ts";
+import { create } from "@bufbuild/protobuf";
+import { PlaybackStateSchema } from "@proto/captain_nemo/v1/wire_pb.ts";
 import type { Bar, PlaybackState, Trade } from "@proto/captain_nemo/v1/wire_pb.ts";
+import type { FileEntry, PlaybackAck } from "../worker/api.ts";
+import { decodeFrame } from "../worker/codec.ts";
 
 export type CandlePoint = [number, number, number, number, number];
 
@@ -18,12 +20,18 @@ export type ChartSnapshot = {
   activeFileId: string;
   selectedFileId: string;
   fileManagerOpen: boolean;
+  playbackBusy: boolean;
 };
 
 export type PlayArgs = {
   speed: number;
   startNs: string;
   endNs: string;
+};
+
+export type MergeResult = {
+  candles: CandlePoint[];
+  changed: boolean;
 };
 
 const listeners = new Set<() => void>();
@@ -42,6 +50,7 @@ export const chartStore: ChartSnapshot = {
   activeFileId: "",
   selectedFileId: "",
   fileManagerOpen: true,
+  playbackBusy: false,
 };
 
 export function subscribe(listener: () => void): () => void {
@@ -116,6 +125,14 @@ export function setFileManagerOpen(open: boolean): void {
   notify();
 }
 
+export function setPlaybackBusy(busy: boolean): void {
+  if (chartStore.playbackBusy === busy) {
+    return;
+  }
+  chartStore.playbackBusy = busy;
+  notify();
+}
+
 export function clearChart(): void {
   chartStore.candles = [];
   chartStore.trades = [];
@@ -164,6 +181,23 @@ export function resolvePlayArgs(store: ChartSnapshot): PlayArgs {
   return { speed, startNs: selected?.startNs ?? "0", endNs };
 }
 
+export function applyPlaybackAck(ack: PlaybackAck): void {
+  const prev = chartStore.playback;
+  const speed = ack.speed > 0 ? ack.speed : (prev?.speed ?? chartStore.speed);
+  chartStore.playback = create(PlaybackStateSchema, {
+    instrumentId: prev?.instrumentId || chartStore.instrumentId,
+    cursorNs: prev?.cursorNs ?? 0n,
+    speed,
+    playing: ack.playing,
+    startNs: prev?.startNs ?? 0n,
+    endNs: prev?.endNs ?? 0n,
+  });
+  if (ack.speed > 0) {
+    chartStore.speed = ack.speed;
+  }
+  notify();
+}
+
 function nsToMs(value: bigint): number {
   return Number(value / 1_000_000n);
 }
@@ -178,35 +212,113 @@ function candleFromBar(bar: Bar): CandlePoint {
   ];
 }
 
-export function applyFrameBuffer(buffer: ArrayBuffer): void {
-  const frame = decodeFrame(new Uint8Array(buffer));
+function indexOfTimestamp(candles: CandlePoint[], ts: number): number {
+  let lo = 0;
+  let hi = candles.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = candles[mid]?.[0];
+    if (value === ts) {
+      return mid;
+    }
+    if (value !== undefined && value < ts) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return -1;
+}
+
+function allTimestampsExist(candles: CandlePoint[], points: CandlePoint[]): boolean {
+  for (const point of points) {
+    if (indexOfTimestamp(candles, point[0]) < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function mergeCandleDeltas(existing: CandlePoint[], points: CandlePoint[]): MergeResult {
+  if (points.length === 0) {
+    return { candles: existing, changed: false };
+  }
+  if (existing.length === 0) {
+    return { candles: points, changed: true };
+  }
+  if (allTimestampsExist(existing, points)) {
+    return { candles: existing, changed: false };
+  }
+  const lastTs = existing[existing.length - 1]?.[0] ?? 0;
+  const firstTs = points[0]?.[0] ?? 0;
+  if (firstTs >= lastTs) {
+    const next = existing.slice();
+    let index = 0;
+    if (firstTs === lastTs) {
+      next[next.length - 1] = points[0]!;
+      index = 1;
+    }
+    for (; index < points.length; index += 1) {
+      next.push(points[index]!);
+    }
+    return { candles: next, changed: true };
+  }
+  const merged = new Map(existing.map((point) => [point[0], point]));
+  for (const point of points) {
+    merged.set(point[0], point);
+  }
+  return { candles: [...merged.values()].sort((a, b) => a[0] - b[0]), changed: true };
+}
+
+function applyDecodedBytes(bytes: Uint8Array): boolean {
+  const frame = decodeFrame(bytes);
   if (frame.kind.case === "bars") {
     const batch = frame.kind.value;
+    if (batch.barStep && batch.barStep !== chartStore.barStep) {
+      return false;
+    }
     const points = batch.bars.map(candleFromBar);
     if (batch.snapshot) {
       chartStore.candles = points;
       chartStore.instrumentId = batch.instrumentId || chartStore.instrumentId;
       chartStore.barStep = batch.barStep || chartStore.barStep;
-    } else {
-      const merged = new Map(chartStore.candles.map((point) => [point[0], point]));
-      for (const point of points) {
-        merged.set(point[0], point);
-      }
-      chartStore.candles = [...merged.values()].sort((a, b) => a[0] - b[0]);
+      return true;
     }
-    notify();
-    return;
+    const merged = mergeCandleDeltas(chartStore.candles, points);
+    if (!merged.changed) {
+      return false;
+    }
+    chartStore.candles = merged.candles;
+    return true;
   }
   if (frame.kind.case === "trades") {
     chartStore.trades = frame.kind.value.trades.slice(-200);
-    notify();
-    return;
+    return true;
   }
   if (frame.kind.case === "playback") {
     chartStore.playback = frame.kind.value;
     if (frame.kind.value.speed > 0) {
       chartStore.speed = frame.kind.value.speed;
     }
+    return true;
+  }
+  return false;
+}
+
+export function applyFrameBuffer(buffer: ArrayBuffer): void {
+  if (applyDecodedBytes(new Uint8Array(buffer))) {
+    notify();
+  }
+}
+
+export function applyFrameBuffers(buffers: ArrayBuffer[]): void {
+  let changed = false;
+  for (const buffer of buffers) {
+    if (applyDecodedBytes(new Uint8Array(buffer))) {
+      changed = true;
+    }
+  }
+  if (changed) {
     notify();
   }
 }

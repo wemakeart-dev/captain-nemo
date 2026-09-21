@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SocketFrameSchema } from "@proto/captain_nemo/v1/wire_pb.ts";
-import { Conflator } from "./conflation.ts";
+import { Conflator, toFrameBatchMessage } from "./conflation.ts";
 import { decodeFrame, encodeCommand } from "./codec.ts";
 
 const testdata = resolve(dirname(fileURLToPath(import.meta.url)), "../proto/testdata/golden_bar_batch.bin");
@@ -54,19 +54,33 @@ describe("protobuf contract", () => {
   });
 
   it("posts market frames with a transferable array buffer", () => {
-    const transferred: Transferable[] = [];
-    const posted: unknown[] = [];
-    const postMessage = (data: unknown, transfer?: Transferable[]) => {
-      posted.push(data);
-      transferred.push(...(transfer ?? []));
-    };
     const frame = toBinary(SocketFrameSchema, goldenFrame());
-    const buffer = frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength);
-    postMessage({ nemo: "frame", byteLength: buffer.byteLength, kind: "bars", buffer }, [buffer]);
-    expect((posted[0] as { nemo: string; kind: string }).nemo).toBe("frame");
-    expect((posted[0] as { kind: string }).kind).toBe("bars");
-    expect(transferred).toHaveLength(1);
-    expect((transferred[0] as ArrayBuffer).byteLength).toBe(frame.byteLength);
+    const { message, transfer } = toFrameBatchMessage([{ bytes: frame, kind: "bars" }]);
+    expect(message.nemo).toBe("frames");
+    expect(message.kinds).toEqual(["bars"]);
+    expect(message.buffers).toHaveLength(1);
+    expect(transfer).toHaveLength(1);
+    expect((transfer[0] as ArrayBuffer).byteLength).toBe(frame.byteLength);
+  });
+
+  it("posts a conflated flush as one transferable batch", () => {
+    const bars = toBinary(SocketFrameSchema, goldenFrame());
+    const playback = toBinary(
+      SocketFrameSchema,
+      create(SocketFrameSchema, {
+        kind: {
+          case: "playback",
+          value: { instrumentId: "A", playing: true, cursorNs: 10n, speed: 1 },
+        },
+      }),
+    );
+    const { message, transfer } = toFrameBatchMessage([
+      { bytes: bars, kind: "bars" },
+      { bytes: playback, kind: "playback" },
+    ]);
+    expect(message.buffers).toHaveLength(2);
+    expect(message.kinds).toEqual(["bars", "playback"]);
+    expect(transfer).toHaveLength(2);
   });
 
   it("encodes catalog and import commands without leaving empty oneof fields", () => {
@@ -127,21 +141,8 @@ describe("protobuf contract", () => {
 
 describe("conflator", () => {
   it("keeps the latest bar and playback frames and passes errors through", () => {
-    const flushed: Uint8Array[][] = [];
-    const conflator = new Conflator(
-      (frames) => flushed.push(frames),
-      10_000,
-      (bytes) => {
-        const frame = decodeFrame(bytes);
-        if (frame.kind.case === "bars") {
-          return "bars";
-        }
-        if (frame.kind.case === "playback") {
-          return "playback";
-        }
-        return "pass";
-      },
-    );
+    const flushed: { bytes: Uint8Array; kind: string }[][] = [];
+    const conflator = new Conflator((frames) => flushed.push(frames), 10_000);
     const first = toBinary(
       SocketFrameSchema,
       create(SocketFrameSchema, {
@@ -160,32 +161,24 @@ describe("conflator", () => {
         kind: { case: "error", value: { code: "INTERNAL", message: "boom" } },
       }),
     );
-    conflator.push(first);
-    conflator.push(second);
-    conflator.push(error);
+    conflator.push("bars", first);
+    conflator.push("bars", second);
+    conflator.push("error", error);
     expect(flushed).toHaveLength(1);
-    expect(decodeFrame(flushed[0][0]).kind.case).toBe("error");
+    expect(flushed[0][0]?.kind).toBe("error");
+    expect(decodeFrame(flushed[0][0]!.bytes).kind.case).toBe("error");
     conflator.emit();
     expect(flushed).toHaveLength(2);
-    expect(decodeFrame(flushed[1][0]).kind.case).toBe("bars");
-    if (decodeFrame(flushed[1][0]).kind.case === "bars") {
-      expect(decodeFrame(flushed[1][0]).kind.value.instrumentId).toBe("B");
+    expect(flushed[1][0]?.kind).toBe("bars");
+    expect(decodeFrame(flushed[1][0]!.bytes).kind.case).toBe("bars");
+    if (decodeFrame(flushed[1][0]!.bytes).kind.case === "bars") {
+      expect(decodeFrame(flushed[1][0]!.bytes).kind.value.instrumentId).toBe("B");
     }
   });
 
   it("keeps a later paused playback frame over an earlier playing one", () => {
-    const flushed: Uint8Array[][] = [];
-    const conflator = new Conflator(
-      (frames) => flushed.push(frames),
-      10_000,
-      (bytes) => {
-        const frame = decodeFrame(bytes);
-        if (frame.kind.case === "playback") {
-          return "playback";
-        }
-        return "pass";
-      },
-    );
+    const flushed: { bytes: Uint8Array; kind: string }[][] = [];
+    const conflator = new Conflator((frames) => flushed.push(frames), 10_000);
     const playing = toBinary(
       SocketFrameSchema,
       create(SocketFrameSchema, {
@@ -204,11 +197,12 @@ describe("conflator", () => {
         },
       }),
     );
-    conflator.push(playing);
-    conflator.push(paused);
+    conflator.push("playback", playing);
+    conflator.push("playback", paused);
     conflator.emit();
     expect(flushed).toHaveLength(1);
-    const frame = decodeFrame(flushed[0][0]);
+    expect(flushed[0][0]?.kind).toBe("playback");
+    const frame = decodeFrame(flushed[0][0]!.bytes);
     expect(frame.kind.case).toBe("playback");
     if (frame.kind.case === "playback") {
       expect(frame.kind.value.playing).toBe(false);

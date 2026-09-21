@@ -10,7 +10,7 @@ import type {
   RpcRequest,
   WorkerApi,
 } from "./api.ts";
-import { decodeFrame } from "./codec.ts";
+import { toFrameBatchMessage, type FlushedFrame } from "./conflation.ts";
 import { EngineSocket } from "./socket.ts";
 
 function assertResult(frame: SocketFrame): SocketFrame {
@@ -23,13 +23,9 @@ function assertResult(frame: SocketFrame): SocketFrame {
   return frame;
 }
 
-function transferFrames(frames: Uint8Array[]): void {
-  const scope = self as DedicatedWorkerGlobalScope;
-  for (const frame of frames) {
-    const kind = decodeFrame(frame).kind.case ?? "unknown";
-    const buffer = frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength);
-    scope.postMessage({ nemo: "frame", buffer, byteLength: buffer.byteLength, kind }, [buffer]);
-  }
+function transferFrames(frames: FlushedFrame[]): void {
+  const { message, transfer } = toFrameBatchMessage(frames);
+  (self as DedicatedWorkerGlobalScope).postMessage(message, transfer);
 }
 
 const socket = new EngineSocket(transferFrames);

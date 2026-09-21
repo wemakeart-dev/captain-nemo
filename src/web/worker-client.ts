@@ -1,5 +1,9 @@
-import type { FrameMessage, RpcRequest, RpcResponse, WorkerApi } from "../worker/api.ts";
-import { applyFrameBuffer, setStatus } from "./store.ts";
+import type { FrameBatchMessage, FrameMessage, RpcRequest, RpcResponse, WorkerApi } from "../worker/api.ts";
+import { applyFrameBuffer, applyFrameBuffers, setStatus } from "./store.ts";
+
+function isFrameBatch(data: unknown): data is FrameBatchMessage {
+  return Boolean(data && typeof data === "object" && (data as FrameBatchMessage).nemo === "frames");
+}
 
 function isFrameMessage(data: unknown): data is FrameMessage {
   return Boolean(data && typeof data === "object" && (data as FrameMessage).nemo === "frame");
@@ -15,6 +19,10 @@ export function createWorkerClient(): { api: WorkerApi; worker: Worker } {
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
   worker.addEventListener("message", (event: MessageEvent<unknown>) => {
+    if (isFrameBatch(event.data)) {
+      applyFrameBuffers(event.data.buffers);
+      return;
+    }
     if (isFrameMessage(event.data)) {
       applyFrameBuffer(event.data.buffer);
       return;

@@ -1,6 +1,6 @@
 import type { SocketFrame } from "@proto/captain_nemo/v1/wire_pb.ts";
 import { decodeFrame, encodeCommand, isCommandReply, type CommandBodyInit } from "./codec.ts";
-import { Conflator } from "./conflation.ts";
+import { Conflator, type FlushedFrame } from "./conflation.ts";
 
 export class EngineSocket {
   private socket: WebSocket | null = null;
@@ -11,20 +11,8 @@ export class EngineSocket {
   >();
   private conflator: Conflator;
 
-  constructor(private readonly onFrames: (frames: Uint8Array[]) => void) {
-    this.conflator = new Conflator(onFrames, 33, (bytes) => {
-      const frame = decodeFrame(bytes);
-      if (frame.kind.case === "bars") {
-        return "bars";
-      }
-      if (frame.kind.case === "trades") {
-        return "trades";
-      }
-      if (frame.kind.case === "playback") {
-        return "playback";
-      }
-      return "pass";
-    });
+  constructor(private readonly onFrames: (frames: FlushedFrame[]) => void) {
+    this.conflator = new Conflator(onFrames, 33);
   }
 
   get connected(): boolean {
@@ -54,7 +42,7 @@ export class EngineSocket {
           waiter?.resolve(frame);
           return;
         }
-        this.conflator.push(bytes);
+        this.conflator.push(frame.kind.case ?? "unknown", bytes);
       });
       socket.addEventListener("close", () => {
         this.conflator.stop();

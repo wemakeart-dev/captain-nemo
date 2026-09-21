@@ -52,14 +52,15 @@ Taxonomy is virtual. CSV files stay on disk; **Move** only updates SQLite column
 
 Visualization uses an asyncio clock, not `BacktestEngine.run()`. `PlaybackController` keeps a session: instrument, bar step, range, cursor, and speed.
 
-- **Play** loads 1-minute bars and the slim trade tape once (parquet cache keyed by path mtime), then ticks at about 30 Hz. Each tick always sends `PlaybackState`. Due bars (capped at 256 per tick) and trades in `(prev_cursor, cursor]` (last 200) go out only when they are due.
+- **Play** loads 1-minute bars and the slim trade tape once (parquet cache keyed by path mtime), then ticks at about 30 Hz. Each tick always sends `PlaybackState`. Trades in `(prev_cursor, cursor]` (last 200) go out when they are due. Due bar frames (capped at 256 per tick) go out only when this session has **not** already sent a QueryBars snapshot for the same tape. After Select Data, the snapshot is the chart source of truth; Play is cursor + trade tape.
+- **QueryBars** reads parquet, resamples, and encodes the snapshot in `asyncio.to_thread`, then warms the playback tape in the background so the next Play is a cache hit + `launch()`.
 - **Pause** (`StopPlayback`) freezes `cursor_ns` and sends `PlaybackState { playing: false }`. The task is cancelled; parquet is not re-read.
 - **Play again** with `start_ns = 0` (or the paused cursor) **resumes** the same instrument and step when the cursor is still before `end_ns`. It does not snap to the first bar.
-- **Stop** (`ResetPlayback`) pauses if playing, rewinds `cursor_ns` to the session start, clears the trade tape, sends `PlaybackState { playing: false, cursor_ns: start }`, and re-sends a bar snapshot so the cursor mark jumps to the start. Next Play starts from the beginning. Do not overload Pause for this: `StartPlayback` with `start_ns = 0` would otherwise resume mid-range.
+- **Stop** (`ResetPlayback`) pauses if playing, rewinds `cursor_ns` to the session start, clears the trade tape, and sends `PlaybackState { playing: false, cursor_ns: start }` plus an empty trade batch. It does **not** re-send bars. Next Play starts from the beginning. Do not overload Pause for this: `StartPlayback` with `start_ns = 0` would otherwise resume mid-range.
 - **Play** at the end of the range, or with a different instrument/step, starts from `start_ns` or the first bar.
 - **Play** while already playing is a no-op.
 - **SetSpeed** rebases the wall clock (`sim0 = cursor`, `wall0 = now`) so the cursor does not jump. The replay multiplier is `cursor = sim0 + (monotonic - wall0) * speed`.
-- Trade lookup is `numpy.searchsorted` on a sorted `int64` timestamp vector. Proto encoding walks column arrays, not `iterrows`. Catalog reads run in `asyncio.to_thread`.
+- Trade lookup is `numpy.searchsorted` on a sorted `int64` timestamp vector. Bar timestamps use `DatetimeIndex.as_unit("ns")` (never a raw ms `.astype("int64")`). Proto encoding walks column arrays, not `iterrows`. Catalog reads run in `asyncio.to_thread`.
 - Clock exceptions send `Error { code: PLAYBACK_FAILED }` and a red log line. They do not leave the UI stuck on “Playing”.
 
 ## Ingest
@@ -104,10 +105,10 @@ Each WebSocket connection gets `SessionHello`, then `SocketFrame` commands:
 | `ListFiles` | Flat file-manager rows |
 | `RemoveFile` | Drop SQLite row + that `file_id` from Parquet; rebuild bars |
 | `MoveFile` | Update taxonomy columns only |
-| `QueryBars` | Ack + snapshot `BarBatch` (1m resampled to the requested step and range) |
-| `StartPlayback` | Prepare/resume the clock; ack; paced bar deltas, capped trade tape, `PlaybackState` |
+| `QueryBars` | Ack + snapshot `BarBatch` (1m resampled to the requested step and range); warms the playback tape |
+| `StartPlayback` | Prepare/resume the clock (awaits a warm tape if QueryBars already ran); ack; `PlaybackState`; trade tape; bar deltas only when there was no snapshot for this tape |
 | `StopPlayback` | Pause: freeze cursor, `PlaybackState { playing: false }`, ack |
-| `ResetPlayback` | Rewind to session start, snapshot bars, empty trade tape, ack (`PlaybackAck` like pause) |
+| `ResetPlayback` | Rewind to session start, empty trade tape, ack (`PlaybackAck` like pause). Does not re-send bars |
 | `SetSpeed` | Rebase the replay multiplier; ack + `PlaybackState` |
 
 Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanoseconds.
@@ -130,7 +131,7 @@ Prices and sizes on the wire are decimal strings. Timestamps are `int64` nanosec
 - Binance Vision URL/path lockstep, mocked download/checksum/extract, um-trades-only `import_vision`
 - Library CRUD, unique path, period display/key, catalog rollup, merge then remove, move-is-metadata
 - WebSocket hello / import / query / list-remove-move / ImportVision; reject disabled datasets
-- Playback clock (virtual time): 60x pacing, pause/resume cursor, Stop rewind then Play from start, restart at end, speed rebase, trade window, `PLAYBACK_FAILED`
-- WebSocket play → pause → play keeps the cursor; play → reset → play restarts at range start
+- Playback clock (virtual time): 60x pacing, pause/resume cursor, Stop rewind then Play from start (no bar snapshot on reset), restart at end, speed rebase, trade window, `PLAYBACK_FAILED`, skip due-bar frames after a snapshot, vectorized timestamps at 44633 bars
+- WebSocket play → pause → play keeps the cursor; play → reset → play restarts at range start; QueryBars then Play does not re-stream bars
 - Console banner, color markup, Ctrl+C / shutdown event
 - Protobuf round-trip vs golden bytes (`src/proto/testdata/golden_bar_batch.bin`)

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "../../worker/api.ts";
 import { chartStore, hasSelectedFile, setActiveFileId, setFiles, setSelectedFileId, setStatus } from "../store.ts";
-import { clearSelectionIfRemoved, selectFile } from "./select.ts";
+import { clearSelectionIfRemoved, reloadSelectedFile, selectFile } from "./select.ts";
 
 const sample: FileEntry = {
   fileId: "file-1",
@@ -22,6 +22,7 @@ const sample: FileEntry = {
 describe("selectFile", () => {
   afterEach(() => {
     chartStore.instrumentId = "";
+    chartStore.barStep = "1m";
     setFiles([]);
     setActiveFileId("");
     setSelectedFileId("");
@@ -45,6 +46,43 @@ describe("selectFile", () => {
       "1785543600000000000",
     );
     expect(resetPlayback).toHaveBeenCalled();
+  });
+
+  it("reloads the selected file at a new bar step", async () => {
+    chartStore.files = [sample];
+    chartStore.selectedFileId = sample.fileId;
+    const queryBars = vi.fn().mockResolvedValue({ barCount: 9 });
+    const resetPlayback = vi.fn().mockResolvedValue({ playing: false, speed: 1 });
+    await reloadSelectedFile({ queryBars, resetPlayback }, "5m");
+    expect(queryBars).toHaveBeenCalledWith(
+      "BTCUSDC-PERP.BINANCE",
+      "5m",
+      "1785542400000000000",
+      "1785543600000000000",
+    );
+    expect(resetPlayback).toHaveBeenCalled();
+    expect(chartStore.status).toBe("Loaded 9 bars");
+  });
+
+  it("does not apply a superseded bar-step query", async () => {
+    chartStore.files = [sample];
+    let finishFirst: (count: number) => void = () => undefined;
+    const queryBars = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ barCount: number }>((resolve) => {
+            finishFirst = (barCount) => resolve({ barCount });
+          }),
+      )
+      .mockResolvedValueOnce({ barCount: 4 });
+    const resetPlayback = vi.fn().mockResolvedValue({ playing: false, speed: 1 });
+    const first = selectFile(sample, { queryBars, resetPlayback }, "1m");
+    const second = selectFile(sample, { queryBars, resetPlayback }, "5m");
+    await second;
+    finishFirst(12);
+    await first;
+    expect(chartStore.status).toBe("Loaded 4 bars");
   });
 
   it("clears active and chart selection when that file is removed", () => {
