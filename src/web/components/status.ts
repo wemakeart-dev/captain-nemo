@@ -1,5 +1,5 @@
 import { define, html } from "hybrids";
-import { chartStore, subscribe } from "../store.ts";
+import { chartStore, subscribeKeys } from "../store.ts";
 
 export const NemoStatus = define({
   tag: "nemo-status",
@@ -15,6 +15,6 @@ export const NemoStatus = define({
         letter-spacing: 0.02em;
       }
     `,
-    connect: (_host, _key, invalidate) => subscribe(invalidate),
+    connect: (_host, _key, invalidate) => subscribeKeys(["status", "connected"], invalidate),
   },
 });

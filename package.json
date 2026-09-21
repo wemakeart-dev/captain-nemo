@@ -11,7 +11,8 @@
     "engine:dev": "uv run --directory src/engine python -m captain_nemo_engine",
     "test:web": "vitest run --config vitest.web.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
-    "test:engine": "uv run --directory src/engine pytest"
+    "test:engine": "uv run --directory src/engine pytest",
+    "proc:dev": "netstat -ano | findstr :5173 && netstat -ano | findstr :8765"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.57.2",

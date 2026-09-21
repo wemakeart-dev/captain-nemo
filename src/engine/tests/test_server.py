@@ -68,6 +68,8 @@ async def test_session_hello_import_and_query(tmp_path: Path) -> None:
             state = decode_frame(await client.recv())
             assert state.WhichOneof("kind") == "playback"
             assert state.playback.playing is True
+            live = await drain_frames(client, 0.2)
+            assert not any(frame.WhichOneof("kind") == "bars" for frame in live)
 
 
 RANGE_START_NS = 1_785_542_400_000_000_000
@@ -256,7 +258,7 @@ async def test_playback_reset_then_play_restarts_at_range_start(tmp_path: Path) 
             assert reset_states
             assert reset_states[-1].playing is False
             assert reset_states[-1].cursor_ns == RANGE_START_NS
-            assert any(frame.bars.snapshot for frame in after_reset if frame.WhichOneof("kind") == "bars")
+            assert not any(frame.WhichOneof("kind") == "bars" for frame in after_reset)
             tapes = [frame.trades for frame in after_reset if frame.WhichOneof("kind") == "trades"]
             assert tapes
             assert len(tapes[-1].trades) == 0

@@ -48,8 +48,14 @@ class PlaybackTape:
 
 
 def datetime_index_ns(index: pd.Index) -> np.ndarray:
+    if len(index) == 0:
+        return np.empty(0, dtype=np.int64)
     dt = pd.DatetimeIndex(index)
-    return np.fromiter((int(pd.Timestamp(ts).value) for ts in dt), dtype=np.int64, count=len(dt))
+    if dt.tz is None:
+        dt = dt.tz_localize("UTC")
+    else:
+        dt = dt.tz_convert("UTC")
+    return np.asarray(dt.as_unit("ns").astype("int64"), dtype=np.int64)
 
 
 def trade_window_slice(trade_ts: np.ndarray, last_ns: int, cursor_ns: int, limit: int = TAPE_LIMIT) -> slice:
@@ -163,6 +169,21 @@ def filter_range(bars: pd.DataFrame, start_ns: int, end_ns: int) -> pd.DataFrame
     return bars.loc[(bars.index >= start) & (bars.index <= end)]
 
 
+def query_bars_payload(
+    catalog_root: Path,
+    instrument_id: str,
+    start_ns: int,
+    end_ns: int,
+    bar_step: str,
+) -> tuple[int, bytes | None]:
+    minute = load_minute_bars(catalog_root, instrument_id)
+    if minute.empty:
+        raise PlaybackError("UNKNOWN_INSTRUMENT", instrument_id)
+    bars = resample_bars(filter_range(minute, start_ns, end_ns), bar_step)
+    snapshot = bars_to_proto(instrument_id, bar_step, bars, True) if not bars.empty else None
+    return len(bars), snapshot
+
+
 def _mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -192,6 +213,7 @@ class PlaybackController:
         self._bar_index = 0
         self._last_trade_ns = 0
         self._range_hi = 0
+        self._snapshot_key: tuple | None = None
         self.speed = 1.0
         self.playing = False
         self.instrument_id = ""
@@ -203,6 +225,24 @@ class PlaybackController:
     def load_memory(self, instrument_id: str, bar_step: str, bars: pd.DataFrame, trades: pd.DataFrame) -> None:
         self._memory = True
         self._tape = build_tape(instrument_id, bar_step, bars, trades, ("memory", instrument_id, bar_step))
+
+    def mark_snapshot(self, key: tuple | None = None) -> None:
+        if key is not None:
+            self._snapshot_key = key
+            return
+        if self._tape is not None:
+            self._snapshot_key = self._tape.key
+
+    async def warm(self, instrument_id: str, bar_step: str) -> PlaybackTape:
+        tape = await self._ensure_tape(instrument_id, bar_step)
+        self.mark_snapshot(tape.key)
+        return tape
+
+    def _should_send_bar_deltas(self) -> bool:
+        tape = self._tape
+        if tape is None or self._snapshot_key is None:
+            return True
+        return self._snapshot_key != tape.key
 
     def state_frame(self) -> bytes:
         return playback_state_frame(
@@ -271,7 +311,6 @@ class PlaybackController:
             return
         try:
             await self._send(self.state_frame())
-            await self._send(bars_to_proto(self.instrument_id, self.bar_step, self.range_bars(), True))
             empty = pd.DataFrame(columns=["trade_id", "price", "quantity", "quote_qty", "buyer_maker", "ts_event_ns"])
             await self._send(trades_to_proto(self.instrument_id, empty))
         except Exception:
@@ -432,13 +471,15 @@ class PlaybackController:
             return 0
         start = self._bar_index
         end = start
-        limit = min(self._range_hi, start + BARS_PER_TICK)
+        send_bars = self._should_send_bar_deltas()
+        limit = min(self._range_hi, start + BARS_PER_TICK) if send_bars else self._range_hi
         while end < limit and int(tape.bar_ts[end]) <= cursor:
             end += 1
         if end <= start:
             return 0
         self._bar_index = end
-        await self._send(bars_to_proto(self.instrument_id, self.bar_step, tape.bars.iloc[start:end], False))
+        if send_bars:
+            await self._send(bars_to_proto(self.instrument_id, self.bar_step, tape.bars.iloc[start:end], False))
         return end - start
 
     async def _send_due_trades(self, cursor: int) -> None:

@@ -9,14 +9,13 @@ from typing import Any
 from websockets.asyncio.server import ServerConnection
 from websockets.asyncio.server import serve as ws_serve
 
-from captain_nemo_engine.bars import resample_bars
 from captain_nemo_engine.console import log_error, log_info, log_success, log_warn
-from captain_nemo_engine.ingest import import_csv, import_vision, load_minute_bars, remove_imported_file
+from captain_nemo_engine.ingest import import_csv, import_vision, remove_imported_file
 from captain_nemo_engine.library import LibraryError, list_files, list_instruments, move_file
 from captain_nemo_engine.paths import DEFAULT_CATALOG, DEFAULT_DOWNLOADS, DEFAULT_HOST, DEFAULT_PORT, ensure_generated_path
 from captain_nemo_engine.vision.http import Opener
 from captain_nemo_engine.vision.spec import VisionError
-from captain_nemo_engine.playback import PlaybackController, PlaybackError, bars_to_proto, filter_range
+from captain_nemo_engine.playback import PlaybackController, PlaybackError, query_bars_payload
 from captain_nemo_engine.wire import decode_frame, error_frame, hello_frame, new_frame
 
 ensure_generated_path()
@@ -121,6 +120,7 @@ class EngineSession:
         self.download_root = Path(download_root) if download_root is not None else DEFAULT_DOWNLOADS
         self.vision_opener = vision_opener
         self.playback = PlaybackController(catalog_root, self.send)
+        self._warm_task: asyncio.Task | None = None
 
     async def send(self, payload: bytes) -> None:
         await self.connection.send(payload)
@@ -139,6 +139,13 @@ class EngineSession:
                     log_error(f"internal error: {exc}")
                     await self.send(error_frame(0, "INTERNAL", str(exc)))
         finally:
+            if self._warm_task is not None:
+                self._warm_task.cancel()
+                try:
+                    await self._warm_task
+                except (asyncio.CancelledError, PlaybackError, Exception):
+                    pass
+                self._warm_task = None
             await self.playback.stop(emit=False)
             log_info(f"client disconnected {peer}")
 
@@ -303,24 +310,49 @@ class EngineSession:
         _fill_file_entry(result.result.move_file.file, item)
         await self.send(result.SerializeToString())
 
+    def _begin_warm(self, instrument_id: str, bar_step: str) -> None:
+        if self._warm_task is not None and not self._warm_task.done():
+            self._warm_task.cancel()
+        self._warm_task = asyncio.create_task(self.playback.warm(instrument_id, bar_step), name="nemo-tape-warm")
+
+    async def _await_warm(self) -> None:
+        task = self._warm_task
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except PlaybackError:
+            pass
+
     async def _query_bars(self, cid: int, payload: wire.QueryBars) -> None:
         step = payload.bar_step or "1m"
-        minute = load_minute_bars(self.catalog_root, payload.instrument_id)
-        if minute.empty:
+        try:
+            count, snapshot = await asyncio.to_thread(
+                query_bars_payload,
+                self.catalog_root,
+                payload.instrument_id,
+                payload.start_ns,
+                payload.end_ns,
+                step,
+            )
+        except PlaybackError as exc:
             log_warn(f"unknown instrument {payload.instrument_id}")
-            await self.send(error_frame(cid, "UNKNOWN_INSTRUMENT", payload.instrument_id))
+            await self.send(error_frame(cid, exc.code, exc.message))
             return
-        bars = resample_bars(filter_range(minute, payload.start_ns, payload.end_ns), step)
-        log_success(f"query bars {payload.instrument_id} {step} ({len(bars)} bars)")
+        log_success(f"query bars {payload.instrument_id} {step} ({count} bars)")
         result = new_frame(cid)
-        result.result.query_bars.bar_count = len(bars)
+        result.result.query_bars.bar_count = count
         await self.send(result.SerializeToString())
-        if not bars.empty:
-            await self.send(bars_to_proto(payload.instrument_id, step, bars, True))
+        if snapshot:
+            await self.send(snapshot)
+            self._begin_warm(payload.instrument_id, step)
 
     async def _start_playback(self, cid: int, payload: wire.StartPlayback) -> None:
         step = payload.bar_step or "1m"
         speed = payload.speed or 1.0
+        await self._await_warm()
         try:
             mode = await self.playback.prepare(
                 payload.instrument_id,

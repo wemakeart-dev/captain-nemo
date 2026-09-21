@@ -8,7 +8,7 @@ The worker is a browser `Worker` (`src/worker`), not a Node process. It sits bet
 - Encode/decode `captain_nemo.v1.SocketFrame` using protobuf-es generated code
 - Correlate command/response frames
 - Conflate high-rate `BarBatch`, `TradeBatch`, and `PlaybackState` frames on a ~33ms clock
-- Transfer flushed frame bytes to the main thread with `postMessage(..., [buffer])`
+- Transfer each flush as one `{ nemo: "frames", buffers, kinds }` message with transferable protobuf bytes
 - Expose a typed command API over `postMessage` RPC (`{ nemo: "rpc" }` / `{ nemo: "rpc-result" }`)
 
 ## Why this split
@@ -40,9 +40,9 @@ Nanosecond integers are returned to the UI as strings so RPC payloads stay JSON-
 - Latest playback frame
 - Errors, hello (after connect), and reserved strategy events pass through immediately
 
-On flush, each `Uint8Array` is sliced into a standalone `ArrayBuffer` and transferred. The worker drops its handle.
+On flush, the pending bars/trades/playback `Uint8Array`s are sliced into standalone `ArrayBuffer`s and posted as one transferable batch. The worker drops its handles.
 
-The UI listens for `{ nemo: "frame", buffer, byteLength, kind }` and `{ nemo: "rpc-result" }`.
+The UI listens for `{ nemo: "frames", buffers, kinds }` and `{ nemo: "rpc-result" }`. Kind is classified from the already-decoded WebSocket frame; the worker does not decode protobuf again to flush.
 
 ## Layout
 
@@ -56,4 +56,4 @@ The UI listens for `{ nemo: "frame", buffer, byteLength, kind }` and `{ nemo: "r
 
 ## Tests
 
-`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), transferable `postMessage` framing, and the protobuf contract (Python golden bytes decoded by protobuf-es), including library / reset / `importVision` commands encoded without empty oneofs.
+`yarn test:worker` covers conflation (including a later paused `PlaybackState` winning over an earlier playing frame), a single transferable `{ nemo: "frames" }` batch, flush kinds without a second protobuf decode, and the protobuf contract (Python golden bytes decoded by protobuf-es), including library / reset / `importVision` commands encoded without empty oneofs.

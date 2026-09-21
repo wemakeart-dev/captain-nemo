@@ -1,6 +1,27 @@
-import type { CandlePoint } from "./store.ts";
+import type { CandlePoint } from "../store.ts";
 
-export function buildChartOption(candles: CandlePoint[], cursorMs: number | null) {
+export const CANDLE_SERIES_ID = "ohlc";
+
+export const CHART_GRID = {
+  left: 56,
+  right: 24,
+  top: 24,
+  bottom: 72,
+};
+
+export function cursorOverlayPosition(cursorX: number | null, plotWidth: number) {
+  if (cursorX === null || !Number.isFinite(cursorX) || plotWidth <= 0) {
+    return { hidden: true, left: 0 };
+  }
+  const min = CHART_GRID.left;
+  const max = plotWidth - CHART_GRID.right;
+  if (cursorX < min || cursorX > max) {
+    return { hidden: true, left: 0 };
+  }
+  return { hidden: false, left: cursorX };
+}
+
+export function buildChartOption(candles: CandlePoint[]) {
   return {
     animation: false,
     backgroundColor: "transparent",
@@ -8,12 +29,7 @@ export function buildChartOption(candles: CandlePoint[], cursorMs: number | null
       trigger: "axis",
       axisPointer: { type: "cross" },
     },
-    grid: {
-      left: 56,
-      right: 24,
-      top: 24,
-      bottom: 72,
-    },
+    grid: { ...CHART_GRID },
     xAxis: {
       type: "time",
       axisLine: { lineStyle: { color: "#6c8196" } },
@@ -29,6 +45,7 @@ export function buildChartOption(candles: CandlePoint[], cursorMs: number | null
     ],
     series: [
       {
+        id: CANDLE_SERIES_ID,
         type: "candlestick",
         name: "OHLC",
         large: true,
@@ -42,14 +59,6 @@ export function buildChartOption(candles: CandlePoint[], cursorMs: number | null
           borderColor: "#3dd68c",
           borderColor0: "#f07178",
         },
-        markLine:
-          cursorMs === null
-            ? undefined
-            : {
-                symbol: "none",
-                lineStyle: { color: "#e3c565", type: "dashed" },
-                data: [{ xAxis: cursorMs }],
-              },
       },
     ],
   };

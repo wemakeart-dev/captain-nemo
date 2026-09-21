@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { PlaybackStateSchema, SocketFrameSchema } from "@proto/captain_nemo/v1/wire_pb.ts";
-import { applyFrameBuffer, chartStore, resolvePlayArgs, setFiles, setStatus } from "./store.ts";
+import { applyFrameBuffer, applyFrameBuffers, applyPlaybackAck, chartStore, mergeCandleDeltas, resolvePlayArgs, setFiles, setStatus, subscribe, type CandlePoint } from "./store.ts";
 import type { PlaybackState } from "@proto/captain_nemo/v1/wire_pb.ts";
 
 const golden = resolve(dirname(fileURLToPath(import.meta.url)), "../proto/testdata/golden_bar_batch.bin");
@@ -28,6 +28,8 @@ describe("chart store frames", () => {
     chartStore.files = [];
     chartStore.selectedFileId = "";
     chartStore.activeFileId = "";
+    chartStore.playbackBusy = false;
+    chartStore.barStep = "1m";
     setStatus("Disconnected");
   });
 
@@ -87,6 +89,189 @@ describe("chart store frames", () => {
     expect(chartStore.trades).toHaveLength(200);
     expect(chartStore.trades[0]?.id).toBe(6n);
     expect(chartStore.trades[199]?.id).toBe(205n);
+  });
+
+  it("applies a playback ack without waiting for a playback frame", () => {
+    applyPlaybackAck({ playing: true, speed: 5 });
+    expect(chartStore.playback?.playing).toBe(true);
+    expect(chartStore.speed).toBe(5);
+  });
+
+  it("notifies once for a batch of bars and playback frames", () => {
+    let calls = 0;
+    const unsubscribe = subscribe(() => {
+      calls += 1;
+    });
+    applyFrameBuffers([
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "bars",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              barStep: "1m",
+              snapshot: true,
+              bars: [
+                {
+                  tsEventNs: 1785542400000000000n,
+                  open: "1",
+                  high: "2",
+                  low: "0",
+                  close: "1.5",
+                  volume: "1",
+                  tradeCount: 1,
+                },
+              ],
+            },
+          },
+        }),
+      ),
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "playback",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              cursorNs: 1785542400000000000n,
+              speed: 1,
+              playing: true,
+              startNs: 1785542400000000000n,
+              endNs: 1785543600000000000n,
+            },
+          },
+        }),
+      ),
+    ]);
+    unsubscribe();
+    expect(calls).toBe(1);
+    expect(chartStore.candles).toHaveLength(1);
+    expect(chartStore.playback?.playing).toBe(true);
+  });
+});
+
+describe("candle delta merge", () => {
+  const LARGE = 44_633;
+
+  function candles(count: number, start = 0): CandlePoint[] {
+    return Array.from({ length: count }, (_, index) => {
+      const ts = (start + index) * 60_000;
+      return [ts, 1, 1, 1, 1] as CandlePoint;
+    });
+  }
+
+  it("appends ordered deltas after a 44633-bar snapshot without replacing the prefix", () => {
+    const snapshot = candles(LARGE);
+    const extra = candles(256, LARGE);
+    const merged = mergeCandleDeltas(snapshot, extra);
+    expect(merged.changed).toBe(true);
+    expect(merged.candles).toHaveLength(LARGE + 256);
+    expect(merged.candles[0]).toBe(snapshot[0]);
+    expect(merged.candles[LARGE - 1]).toBe(snapshot[LARGE - 1]);
+    expect(merged.candles[LARGE]?.[0]).toBe(LARGE * 60_000);
+  });
+
+  it("skips redundant deltas whose timestamps are already in the snapshot", () => {
+    const snapshot = candles(LARGE);
+    const redundant = snapshot.slice(-256);
+    const merged = mergeCandleDeltas(snapshot, redundant);
+    expect(merged.changed).toBe(false);
+    expect(merged.candles).toBe(snapshot);
+  });
+
+  it("does not replace candles when a non-snapshot frame repeats loaded timestamps", () => {
+    applyFrameBuffer(
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "bars",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              barStep: "1m",
+              snapshot: true,
+              bars: [
+                {
+                  tsEventNs: 1785542400000000000n,
+                  open: "1",
+                  high: "2",
+                  low: "0",
+                  close: "1.5",
+                  volume: "1",
+                  tradeCount: 1,
+                },
+                {
+                  tsEventNs: 1785542460000000000n,
+                  open: "1.5",
+                  high: "2.5",
+                  low: "1",
+                  close: "2",
+                  volume: "1",
+                  tradeCount: 1,
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    );
+    const before = chartStore.candles;
+    applyFrameBuffer(
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "bars",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              barStep: "1m",
+              snapshot: false,
+              bars: [
+                {
+                  tsEventNs: 1785542400000000000n,
+                  open: "1",
+                  high: "2",
+                  low: "0",
+                  close: "1.5",
+                  volume: "1",
+                  tradeCount: 1,
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    );
+    expect(chartStore.candles).toBe(before);
+  });
+
+  it("ignores a bar snapshot whose step no longer matches the dropdown", () => {
+    chartStore.candles = [];
+    chartStore.barStep = "5m";
+    applyFrameBuffer(
+      frameBuffer(
+        create(SocketFrameSchema, {
+          kind: {
+            case: "bars",
+            value: {
+              instrumentId: "BTCUSDC-PERP.BINANCE",
+              barStep: "1m",
+              snapshot: true,
+              bars: [
+                {
+                  tsEventNs: 1785542400000000000n,
+                  open: "1",
+                  high: "2",
+                  low: "0",
+                  close: "1.5",
+                  volume: "1",
+                  tradeCount: 1,
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    );
+    expect(chartStore.candles).toEqual([]);
+    expect(chartStore.barStep).toBe("5m");
   });
 });
 

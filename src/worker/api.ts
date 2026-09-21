@@ -100,3 +100,9 @@ export type FrameMessage = {
   byteLength: number;
   kind: string;
 };
+
+export type FrameBatchMessage = {
+  nemo: "frames";
+  buffers: ArrayBuffer[];
+  kinds: string[];
+};

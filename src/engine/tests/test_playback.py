@@ -11,6 +11,7 @@ from captain_nemo_engine.playback import (
     NS,
     TAPE_LIMIT,
     PlaybackController,
+    datetime_index_ns,
     trade_window_slice,
 )
 from captain_nemo_engine.wire import decode_frame
@@ -210,7 +211,7 @@ async def test_reset_then_play_restarts_at_range_start(
     assert states
     assert states[-1].cursor_ns == START_NS
     assert states[-1].playing is False
-    assert any(batch.snapshot for batch in bar_batches(frames))
+    assert bar_batches(frames) == []
     tapes = trade_batches(frames)
     assert tapes
     assert list(tapes[-1].trades) == []
@@ -299,3 +300,33 @@ def test_searchsorted_window_returns_last_200_due_prints() -> None:
     assert window.stop == 15_001
     assert window.start == 15_001 - TAPE_LIMIT
     assert int(trade_ts[window.stop - 1]) == cursor
+
+
+def test_datetime_index_ns_vectorized_for_monthly_bar_count() -> None:
+    count = 44_633
+    stamps = [START_NS + i * MINUTE_NS for i in range(count)]
+    index = pd.to_datetime(stamps, utc=True, unit="ns")
+    got = datetime_index_ns(index)
+    expected = np.asarray(pd.DatetimeIndex(index).as_unit("ns").astype("int64"), dtype=np.int64)
+    assert got.shape == (count,)
+    np.testing.assert_array_equal(got, expected)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_playback_skips_due_bar_frames(
+    controller: PlaybackController, clock: VirtualClock, frames: list[bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("bars_to_proto should not run after a QueryBars snapshot")
+
+    monkeypatch.setattr("captain_nemo_engine.playback.bars_to_proto", boom)
+    controller.mark_snapshot()
+    await controller.start(INSTRUMENT, 0, 0, 60.0, "1m")
+    await wait_sleeping(clock)
+    await run_for(clock, 1.0)
+    assert bar_batches(frames) == []
+    states = playback_states(frames)
+    assert states
+    assert states[-1].playing is True
+    await controller.stop()
+    assert controller.playing is False
